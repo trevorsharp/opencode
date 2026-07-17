@@ -5,6 +5,7 @@ import {
   createMemo,
   createResource,
   createRoot,
+  batch,
   For,
   Match,
   on,
@@ -423,9 +424,12 @@ export function NewHome() {
     const directory = directories[0]
     if (!directory) return
     const ctx = global.ensureServerCtx(conn)
-    directories.forEach(ctx.projects.open)
-    ctx.projects.touch(directory)
-    setSelection({ server: ServerConnection.key(conn), directory })
+    batch(() => {
+      directories.forEach(ctx.projects.open)
+      ctx.projects.touch(directory)
+      setSelection({ server: ServerConnection.key(conn), directory })
+    })
+    void ctx.sync.project.refresh().catch(() => undefined)
   }
 
   function openNewSession() {
@@ -1435,6 +1439,7 @@ export function LegacyHome() {
     const serverCtx = global.ensureServerCtx(server)
     serverCtx.projects.open(directory)
     serverCtx.projects.touch(directory)
+    void serverCtx.sync.project.refresh().catch(() => undefined)
     navigate(`/${base64Encode(directory)}`)
   }
 
@@ -1453,10 +1458,31 @@ export function LegacyHome() {
       }
     }
 
+    const createEmptyWorkspace = async (name: string) => {
+      const serverCtx = global.ensureServerCtx(s)
+      const directory = serverCtx.sync.data.path.directory || serverCtx.sync.data.path.home
+      const created = await serverCtx.sdk.client.worktree
+        .create({
+          ...(directory ? { directory } : {}),
+          worktreeCreateInput: { name, workspaceOnly: true },
+        })
+        .then((result) => result.data)
+        .catch((error) => {
+          showToast({
+            title: language.t("workspace.create.failed.title"),
+            description: errorMessage(error, language.t("common.requestFailed")),
+          })
+          return undefined
+        })
+      if (!created?.directory) return
+      return created.directory
+    }
+
     pickDirectory({
       server: s,
       title: language.t("command.project.open"),
       multiple: true,
+      onCreateWorkspace: createEmptyWorkspace,
       onSelect: resolve,
     })
   }

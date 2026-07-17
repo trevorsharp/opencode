@@ -51,14 +51,13 @@ export interface Settings {
 
 export const monoDefault = "System Mono"
 export const sansDefault = "System Sans"
-export const terminalDefault = "JetBrainsMono Nerd Font Mono"
-export const newLayoutDesignsDefault = import.meta.env.VITE_OPENCODE_CHANNEL !== "prod"
+export const terminalDefault = monoDefault
+export const newLayoutDesignsDefault = false
 
 const monoFallback =
   'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace'
 const sansFallback = 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
-const terminalFallback =
-  '"JetBrainsMono Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace'
+const terminalFallback = monoFallback
 
 const monoBase = monoFallback
 const sansBase = sansFallback

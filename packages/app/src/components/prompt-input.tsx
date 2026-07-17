@@ -649,15 +649,13 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const referenceList = createMemo(() =>
     sync()
       .data.reference.filter((reference) => !reference.hidden)
-      .map(
-        (reference): AtOption => ({
-          type: "reference",
-          name: reference.name,
-          path: reference.path,
-          display: reference.name,
-          description: reference.description ?? referenceDescription(reference),
-        }),
-      ),
+      .map((reference): AtOption => ({
+        type: "reference",
+        name: reference.name,
+        path: reference.path,
+        display: reference.name,
+        description: reference.description ?? referenceDescription(reference),
+      })),
   )
 
   const agentList = createMemo(() =>
@@ -667,17 +665,15 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   )
 
   const mcpResourceList = createMemo(() =>
-    Object.values(sync().data.mcp_resource).map(
-      (resource): AtOption => ({
-        type: "resource",
-        name: resource.name,
-        uri: resource.uri,
-        client: resource.client,
-        display: resource.name,
-        description: resource.description,
-        mime: resource.mimeType,
-      }),
-    ),
+    Object.values(sync().data.mcp_resource).map((resource): AtOption => ({
+      type: "resource",
+      name: resource.name,
+      uri: resource.uri,
+      client: resource.client,
+      display: resource.name,
+      description: resource.description,
+      mime: resource.mimeType,
+    })),
   )
 
   const handleAtSelect = (option: AtOption | undefined) => {
@@ -1458,8 +1454,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     }
   }
 
-  const agentsLoading = () => props.controls.agents.loading
-  const agentsShouldFadeIn = createMemo<boolean>((prev) => prev ?? agentsLoading())
   const providersLoading = () => props.controls.model.loading
   const providersShouldFadeIn = createMemo<boolean>((prev) => prev ?? providersLoading())
 
@@ -1498,18 +1492,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     restoreEndOnFocus = true
     props.ref?.(el)
   }
-  const showAgentControl = createMemo(() => props.controls.agents.visible && props.controls.agents.options.length > 0)
-  const agentControlState = createMemo<ComposerAgentControlState>(() => ({
-    title: language.t("command.agent.cycle"),
-    keybind: command.keybindParts("agent.cycle"),
-    options: props.controls.agents.options,
-    current: props.controls.agents.current,
-    style: control(),
-    onSelect: (value) => {
-      props.controls.agents.select(value)
-      restoreFocus()
-    },
-  }))
   return (
     <div class="relative size-full flex flex-col gap-0">
       {(promptReady(), null)}
@@ -1641,9 +1623,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                       aria-label={language.t("prompt.action.attachFile")}
                     />
                   </TooltipV2>
-                  <Show when={showAgentControl()}>
-                    <ComposerAgentControl state={agentControlState()} />
-                  </Show>
                   {props.toolbar}
                   <ComposerModelControl state={modelControlState()} />
                   <Show when={!providersLoading() && store.mode !== "shell" && showVariantControl()}>
@@ -1916,34 +1895,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                     </Button>
                   </div>
                   <div class="flex items-center gap-1.5 min-w-0 flex-1 h-7">
-                    <Show when={!agentsLoading()}>
-                      <div
-                        data-component="prompt-agent-control"
-                        classList={{ "animate-in fade-in duration-300": agentsShouldFadeIn() }}
-                      >
-                        <TooltipKeybind
-                          placement="top"
-                          gutter={4}
-                          title={language.t("command.agent.cycle")}
-                          keybind={command.keybind("agent.cycle")}
-                        >
-                          <Select
-                            size="normal"
-                            options={props.controls.agents.options}
-                            current={props.controls.agents.current}
-                            onSelect={(value) => {
-                              props.controls.agents.select(value)
-                              restoreFocus()
-                            }}
-                            class="capitalize max-w-[160px] text-text-base"
-                            valueClass="truncate text-13-regular text-text-base"
-                            triggerStyle={control()}
-                            triggerProps={{ "data-action": "prompt-agent" }}
-                            variant="ghost"
-                          />
-                        </TooltipKeybind>
-                      </div>
-                    </Show>
                     <Show when={!providersLoading()}>
                       <Show when={store.mode !== "shell"}>
                         <div
@@ -2066,15 +2017,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   )
 }
 
-type ComposerAgentControlState = {
-  title: string
-  keybind: string[]
-  options: string[]
-  current: string
-  style: JSX.CSSProperties | undefined
-  onSelect: (value: string | undefined) => void
-}
-
 type ComposerModelControlState = {
   loading: boolean
   shouldAnimate: boolean
@@ -2088,38 +2030,6 @@ type ComposerModelControlState = {
   style: JSX.CSSProperties | undefined
   onClose: () => void
   onUnpaidClick: () => void
-}
-
-function ComposerAgentControl(props: { state: ComposerAgentControlState }) {
-  return (
-    <div class="relative">
-      <div class="pointer-events-none absolute left-2 top-1/2 z-10 flex size-4 -translate-y-1/2 items-center justify-center text-v2-icon-icon-muted">
-        <Icon name="sliders" size="small" />
-      </div>
-      <TooltipV2
-        placement="top"
-        gutter={4}
-        value={
-          <>
-            {props.state.title}
-            <KeybindV2 keys={props.state.keybind} variant="neutral" />
-          </>
-        }
-      >
-        <Select
-          size="normal"
-          options={props.state.options}
-          current={props.state.current}
-          onSelect={props.state.onSelect}
-          class="max-w-[175px] justify-start text-v2-text-text-faint [&_[data-component=icon]]:text-v2-icon-icon-muted"
-          valueClass="truncate pl-5 text-[13px] font-[440] leading-5 text-v2-text-text-faint"
-          triggerStyle={props.state.style}
-          triggerProps={{ "data-action": "prompt-agent" }}
-          variant="ghost"
-        />
-      </TooltipV2>
-    </div>
-  )
 }
 
 function ComposerModelControl(props: { state: ComposerModelControlState }) {

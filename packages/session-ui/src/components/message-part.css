@@ -207,6 +207,10 @@
   }
 }
 
+html[data-theme="trs"] [data-component="user-message"] [data-slot="user-message-text"] [data-highlight="file"] {
+  color: #90caff;
+}
+
 [data-component="text-part"] {
   width: 100%;
   margin-top: 24px;

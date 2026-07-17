@@ -1867,14 +1867,18 @@ export default function Page() {
     consumePendingMessage: layout.pendingMessage.consume,
   })
 
-  createEffect(
-    on(
-      () => params.id,
-      (id) => {
-        if (!id) requestAnimationFrame(() => inputRef?.focus())
-      },
-    ),
-  )
+  const focusNewSessionInput = () => {
+    if (params.id) return
+    if (!prompt.ready()) return
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (params.id) return
+        inputRef?.focus()
+      })
+    })
+  }
+
+  createEffect(on(() => [sessionKey(), prompt.ready()] as const, focusNewSessionInput))
 
   onMount(() => {
     makeEventListener(document, "keydown", handleKeyDown)

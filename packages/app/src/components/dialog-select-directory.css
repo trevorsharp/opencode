@@ -1,0 +1,20 @@
+.workspace-create-dialog {
+  min-height: 0 !important;
+}
+
+[data-component="dialog"]:has(.workspace-create-dialog) [data-slot="dialog-container"] {
+  width: min(calc(100vw - 32px), 480px);
+  height: auto;
+}
+
+.workspace-create-dialog [data-slot="dialog-body"] {
+  flex: 0;
+  overflow: visible;
+}
+
+.workspace-create-dialog
+  [data-component="input"][data-variant="normal"]
+  [data-slot="input-wrapper"]:focus-within:not(:has([data-readonly])) {
+  border-color: var(--border-weak-base);
+  box-shadow: none;
+}

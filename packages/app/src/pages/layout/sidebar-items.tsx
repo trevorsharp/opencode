@@ -1,4 +1,5 @@
 import type { Session } from "@opencode-ai/sdk/v2/client"
+import { base64Encode } from "@opencode-ai/core/util/encode"
 import { Avatar } from "@opencode-ai/ui/avatar"
 import { Icon } from "@opencode-ai/ui/icon"
 import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
@@ -17,6 +18,7 @@ import { messageAgentColor } from "@/utils/agent"
 import { sessionTitle } from "@/utils/session-title"
 import { sessionPermissionRequest } from "../session/composer/session-request-tree"
 import { childSessionOnPath, getProjectAvatarSource, hasProjectPermissions } from "./helpers"
+import { pathKey } from "@/utils/path-key"
 
 export const ProjectIcon = (props: {
   project: LocalProject
@@ -78,6 +80,7 @@ export type SessionItemProps = {
   list: Session[]
   navList?: Accessor<Session[]>
   slug: string
+  root?: string
   mobile?: boolean
   dense?: boolean
   showTooltip?: boolean
@@ -92,6 +95,7 @@ export type SessionItemProps = {
 const SessionRow = (props: {
   session: Session
   slug: string
+  root?: string
   mobile?: boolean
   dense?: boolean
   tint: Accessor<string | undefined>
@@ -105,10 +109,15 @@ const SessionRow = (props: {
   warmFocus: () => void
 }): JSX.Element => {
   const title = () => sessionTitle(props.session.title)
+  const href = createMemo(() => {
+    const value = `/${props.slug}/session/${props.session.id}`
+    if (!props.root || pathKey(props.root) === pathKey(props.session.directory)) return value
+    return `${value}?root=${base64Encode(props.root)}`
+  })
 
   return (
     <A
-      href={`/${props.slug}/session/${props.session.id}`}
+      href={href()}
       class={`flex items-center gap-2 min-w-0 w-full text-left focus:outline-none ${props.dense ? "py-0.5" : "py-1"}`}
       onPointerDown={props.warmPress}
       onFocus={props.warmFocus}
@@ -165,7 +174,8 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
   })
   const isWorking = createMemo(() => {
     if (hasPermissions()) return false
-    return serverSync().session.data.session_working(props.session.id)
+    const data = serverSync().session.data
+    return data.session_working(props.session.id) || data.session_background_working(props.session.id)
   })
 
   const tint = createMemo(() =>
@@ -201,6 +211,7 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
     <SessionRow
       session={props.session}
       slug={props.slug}
+      root={props.root}
       mobile={props.mobile}
       dense={props.dense}
       tint={tint}
@@ -281,6 +292,8 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
 
 export const NewSessionItem = (props: {
   slug: string
+  directory?: string
+  root?: string
   mobile?: boolean
   dense?: boolean
   sidebarExpanded: Accessor<boolean>
@@ -290,9 +303,14 @@ export const NewSessionItem = (props: {
   const language = useLanguage()
   const label = language.t("command.session.new")
   const tooltip = () => props.mobile || !props.sidebarExpanded()
+  const href = createMemo(() => {
+    const value = `/${props.slug}/session`
+    if (!props.root || !props.directory || pathKey(props.root) === pathKey(props.directory)) return value
+    return `${value}?root=${base64Encode(props.root)}`
+  })
   const item = (
     <A
-      href={`/${props.slug}/session`}
+      href={href()}
       end
       class={`flex items-center gap-2 min-w-0 w-full text-left focus:outline-none ${props.dense ? "py-0.5" : "py-1"}`}
       onClick={() => {

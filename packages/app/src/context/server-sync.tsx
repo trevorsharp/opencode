@@ -222,10 +222,15 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
       void bootstrapInstance(directory)
     },
     onMcp: (directory, setStore) => {
+      const key = directoryKey(directory)
       void retry(() =>
-        sdkFor(directory)
-          .command.list()
-          .then((x) => setStore("command", x.data ?? [])),
+        Promise.all([
+          sdkFor(directory)
+            .command.list()
+            .then((x) => setStore("command", x.data ?? [])),
+          queryClient.fetchQuery(queryOptionsApi.mcp(key)),
+          queryClient.fetchQuery(queryOptionsApi.mcpResources(key)),
+        ]),
       ).catch((err) => {
         showToast({
           variant: "error",
@@ -410,6 +415,12 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
       sessionContent: false,
       permission: session.data.permission,
       vcsCache: children.vcsCache.get(key),
+      loadMcp: () => {
+        void Promise.all([
+          queryClient.refetchQueries(queryOptionsApi.mcp(key)),
+          queryClient.refetchQueries(queryOptionsApi.mcpResources(key)),
+        ])
+      },
       loadLsp: () => {
         void queryClient.fetchQuery(queryOptionsApi.lsp(key))
       },
@@ -448,6 +459,11 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
 
   const projectApi = {
     loadSessions,
+    refresh() {
+      return queryClient.fetchQuery(loadProjectsQuery(serverSDK.scope, serverSDK.client)).then((data) => {
+        setProjects(data)
+      })
+    },
     meta(directory: string, patch: ProjectMeta) {
       children.projectMeta(directory, patch)
     },

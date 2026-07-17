@@ -1,20 +1,129 @@
 import { describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Effect } from "effect"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { Database } from "@opencode-ai/core/database/database"
+import { Ripgrep } from "@opencode-ai/core/ripgrep"
+import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "../../src/session/prompt"
 import { MessageV2 } from "../../src/session/message-v2"
+import { SessionSummary } from "../../src/session/summary"
+import { MCP } from "../../src/mcp"
+import { LSP } from "@/lsp/lsp"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 import { testEffect } from "../lib/effect"
+import { TestLLMServer } from "../lib/llm-server"
+import path from "path"
 
 // Skip tests if no API key is available
 const hasApiKey = !!process.env.ANTHROPIC_API_KEY
+const testLLMServerNode = LayerNode.make({ service: TestLLMServer, layer: TestLLMServer.layer, deps: [] })
+const retry = testEffect(
+  LayerNode.compile(
+    LayerNode.group([
+      SessionPrompt.node,
+      Session.node,
+      SessionProjector.node,
+      SessionSummary.node,
+      Database.node,
+      CrossSpawnSpawner.node,
+      MCP.node,
+      LSP.node,
+      RuntimeFlags.node,
+      testLLMServerNode,
+    ]),
+  ),
+)
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([SessionPrompt.node, Session.node, Ripgrep.node])))
 const live = hasApiKey ? it.instance : it.instance.skip
 
+const providerConfig = (url: string) => ({
+  model: "test/test-model",
+  provider: {
+    test: {
+      name: "Test",
+      id: "test",
+      env: [],
+      npm: "@ai-sdk/openai-compatible",
+      models: {
+        "test-model": {
+          id: "test-model",
+          name: "Test Model",
+          attachment: false,
+          reasoning: false,
+          temperature: false,
+          tool_call: true,
+          release_date: "2025-01-01",
+          limit: { context: 100000, output: 10000 },
+          cost: { input: 0, output: 0 },
+          options: {},
+        },
+      },
+      options: { apiKey: "test-key", baseURL: url },
+    },
+  },
+})
+
 describe("StructuredOutput Integration", () => {
+  retry.instance(
+    "retries missing structured output and reports exhausted retries",
+    () =>
+      Effect.gen(function* () {
+        const llm = yield* TestLLMServer
+        const hasStructuredOutput = (body: Record<string, unknown>) =>
+          JSON.stringify(body).includes('"StructuredOutput"')
+        const isStructuredRequest = (hit: { body: Record<string, unknown> }) => hasStructuredOutput(hit.body)
+        yield* llm.textMatch(isStructuredRequest, "plain response 1")
+        yield* llm.textMatch(isStructuredRequest, "plain response 2")
+        yield* llm.textMatch(isStructuredRequest, "plain response 3")
+
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({ title: "Structured Output Retry Test" })
+        const result = yield* prompt.prompt({
+          sessionID: session.id,
+          parts: [{ type: "text", text: "Return a structured answer." }],
+          format: new SessionV1.OutputFormatJsonSchema({
+            type: "json_schema",
+            schema: {
+              type: "object",
+              properties: { answer: { type: "string" } },
+              required: ["answer"],
+            },
+            retryCount: 2,
+          }),
+        })
+
+        expect(result.info.role).toBe("assistant")
+        if (result.info.role === "assistant") {
+          expect(result.info.error).toMatchObject({
+            name: "StructuredOutputError",
+            data: { retries: 2 },
+          })
+        }
+
+        const attempts = (yield* llm.inputs).filter(hasStructuredOutput)
+        expect(attempts).toHaveLength(3)
+        expect(JSON.stringify(attempts[1])).toContain("The previous response did not use the StructuredOutput tool")
+        expect(JSON.stringify(attempts[2])).toContain("The previous response did not use the StructuredOutput tool")
+      }),
+    {
+      init: (directory) =>
+        Effect.gen(function* () {
+          const llm = yield* TestLLMServer
+          yield* Effect.promise(() =>
+            Bun.write(
+              path.join(directory, "opencode.json"),
+              JSON.stringify({ $schema: "https://opencode.ai/config.json", ...providerConfig(llm.url) }),
+            ),
+          )
+        }),
+    },
+  )
+
   live(
     "produces structured output with simple schema",
     () =>

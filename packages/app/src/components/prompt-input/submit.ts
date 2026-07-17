@@ -2,7 +2,7 @@ import type { Message, Session } from "@opencode-ai/sdk/v2/client"
 import { showToast } from "@/utils/toast"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { Binary } from "@opencode-ai/core/util/binary"
-import { useNavigate, useParams, useSearchParams } from "@solidjs/router"
+import { useLocation, useNavigate, useParams, useSearchParams } from "@solidjs/router"
 import { batch, type Accessor } from "solid-js"
 import { useTabs } from "@/context/tabs"
 import { useServerSync, type ServerSync } from "@/context/server-sync"
@@ -15,6 +15,8 @@ import { useSDK, type DirectorySDK } from "@/context/sdk"
 import { useSync, type DirectorySync } from "@/context/sync"
 import { Identifier } from "@/utils/id"
 import { Worktree as WorktreeState } from "@/utils/worktree"
+import { decode64 } from "@/utils/base64"
+import { pathKey } from "@/utils/path-key"
 import { buildRequestParts } from "./build-request-parts"
 import { setCursorPosition } from "./editor-dom"
 import { formatServerError } from "@/utils/server-errors"
@@ -195,6 +197,7 @@ type PromptSubmitInput = {
 
 export function createPromptSubmit(input: PromptSubmitInput) {
   const navigate = useNavigate()
+  const location = useLocation()
   const sdk = useSDK()
   const sync = useSync()
   const serverSync = useServerSync()
@@ -207,6 +210,15 @@ export function createPromptSubmit(input: PromptSubmitInput) {
   const [search] = useSearchParams<{ draftId?: string }>()
   const tabs = useTabs()
   const pendingKey = (sessionID: string) => ScopedKey.from(sdk().scope, sessionID)
+
+  const rootSearchFor = (sessionDirectory: string) => {
+    const root = new URLSearchParams(location.search).get("root")
+    if (!root) return ""
+    const decoded = decode64(root)
+    if (!decoded) return ""
+    if (pathKey(decoded) === pathKey(sessionDirectory)) return ""
+    return `?root=${root}`
+  }
 
   const errorMessage = (err: unknown) => {
     if (err && typeof err === "object" && "data" in err) {
@@ -379,7 +391,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         layout.handoff.setTabs(base64Encode(sessionDirectory), session.id)
         const draftID = search.draftId
         if (draftID) tabs.promoteDraft(draftID, { server: tabs.draft(draftID).server, sessionId: session.id })
-        else navigate(`/${base64Encode(sessionDirectory)}/session/${session.id}`)
+        else navigate(`/${base64Encode(sessionDirectory)}/session/${session.id}${rootSearchFor(sessionDirectory)}`)
         submission.retarget(prompt.capture({ dir: base64Encode(sessionDirectory), id: session.id }))
       }
     }

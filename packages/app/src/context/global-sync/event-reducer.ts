@@ -111,6 +111,7 @@ export function applyDirectoryEvent(input: {
   setStore: SetStoreFunction<State>
   push: (directory: string) => void
   directory: string
+  loadMcp?: () => void
   loadLsp: () => void
   loadReferences?: () => void
   vcsCache?: VcsCache
@@ -407,6 +408,10 @@ export function applyDirectoryEvent(input: {
     }
     case "reference.updated": {
       input.loadReferences?.()
+      break
+    }
+    case "mcp.tools.changed": {
+      input.loadMcp?.()
       break
     }
   }

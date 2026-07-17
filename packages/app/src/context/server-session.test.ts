@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import type { retry } from "@opencode-ai/core/util/retry"
 import type { Message, OpencodeClient, Part, Session } from "@opencode-ai/sdk/v2/client"
-import { createServerSession } from "./server-session"
+import { createServerSession, sessionHasActiveBackgroundDescendant } from "./server-session"
 
-const session = (id: string, parentID?: string): Session => ({
+const session = (id: string, parentID?: string, metadata?: Session["metadata"]): Session => ({
   id,
   slug: id,
   projectID: "project",
@@ -11,6 +11,7 @@ const session = (id: string, parentID?: string): Session => ({
   title: id,
   version: "1",
   parentID,
+  metadata,
   time: { created: 1, updated: 1 },
 })
 
@@ -104,6 +105,98 @@ function setup(sessions: Record<string, Session>) {
 }
 
 describe("server session", () => {
+  describe("background descendant activity", () => {
+    const background = (id: string, parentID: string | undefined, parentSessionID: string) =>
+      session(id, parentID, { background: true, parentSessionId: parentSessionID, source: "workflow" })
+
+    test("marks the owner working for a busy background child", () => {
+      const info = { root: session("root"), child: background("child", "root", "root") }
+
+      expect(sessionHasActiveBackgroundDescendant("root", info, { child: { type: "busy" } })).toBe(true)
+    })
+
+    test("tracks active descendants through a marked ancestor", () => {
+      const info = {
+        root: session("root"),
+        child: background("child", "root", "root"),
+        grandchild: session("grandchild", "child"),
+      }
+
+      expect(sessionHasActiveBackgroundDescendant("root", info, { grandchild: { type: "busy" } })).toBe(true)
+    })
+
+    test("ignores ordinary child activity", () => {
+      const info = { root: session("root"), child: session("child", "root") }
+
+      expect(sessionHasActiveBackgroundDescendant("root", info, { child: { type: "busy" } })).toBe(false)
+    })
+
+    test("remains working until the last concurrent child settles", () => {
+      const info = {
+        root: session("root"),
+        first: background("first", "root", "root"),
+        second: background("second", "root", "root"),
+      }
+
+      expect(
+        sessionHasActiveBackgroundDescendant("root", info, {
+          first: { type: "idle" },
+          second: { type: "retry", attempt: 1, message: "retrying", next: 1 },
+        }),
+      ).toBe(true)
+      expect(
+        sessionHasActiveBackgroundDescendant("root", info, {
+          first: { type: "idle" },
+          second: { type: "idle" },
+        }),
+      ).toBe(false)
+    })
+
+    test("supports marked top-level background sessions", () => {
+      const info = { root: session("root"), child: background("child", undefined, "root") }
+
+      expect(sessionHasActiveBackgroundDescendant("root", info, { child: { type: "busy" } })).toBe(true)
+    })
+
+    test("reacts when missing active session info arrives", () => {
+      const info: Record<string, Session | undefined> = { root: session("root") }
+      const statuses = { child: { type: "busy" } as const }
+
+      expect(sessionHasActiveBackgroundDescendant("root", info, statuses)).toBe(false)
+      info.child = background("child", "root", "root")
+      expect(sessionHasActiveBackgroundDescendant("root", info, statuses)).toBe(true)
+    })
+
+    test("terminates safely when session parents contain a cycle", () => {
+      const info = {
+        first: session("first", "second"),
+        second: session("second", "first"),
+      }
+
+      expect(sessionHasActiveBackgroundDescendant("root", info, { first: { type: "busy" } })).toBe(false)
+    })
+
+    test("keeps background activity indexed by owner", () => {
+      const store = setup({}).store
+      store.remember(session("first"))
+      store.remember(background("first-child", "first", "first"))
+      store.remember(session("second"))
+      store.remember(background("second-child", "second", "second"))
+      store.set("session_status", "first-child", { type: "busy" })
+
+      expect(store.data.session_background_working("first")).toBe(true)
+      expect(store.data.session_background_working("second")).toBe(false)
+
+      store.set("session_status", "second-child", { type: "busy" })
+      expect(store.data.session_background_working("first")).toBe(true)
+      expect(store.data.session_background_working("second")).toBe(true)
+
+      store.set("session_status", "first-child", { type: "idle" })
+      expect(store.data.session_background_working("first")).toBe(false)
+      expect(store.data.session_background_working("second")).toBe(true)
+    })
+  })
+
   test("resolves lineage by session ID without directory", async () => {
     const ctx = setup({ child: session("child", "root"), root: session("root") })
 

@@ -77,7 +77,7 @@ export function createServerProjects<T extends ServerProjectState>(input: {
     open(directory: string) {
       const scope = input.scope()
       if (current().some((project) => project.worktree === directory)) return
-      setStore("projects", scope, [{ worktree: directory, expanded: true }, ...current()])
+      setStore("projects", scope, [...current(), { worktree: directory, expanded: true }])
     },
     close(directory: string) {
       setStore(

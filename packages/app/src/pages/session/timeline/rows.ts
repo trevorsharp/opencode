@@ -81,12 +81,17 @@ export namespace Timeline {
         }),
       )
 
-    rows.push(
-      new TimelineRow.UserMessage({
-        userMessageID: userMessage.id,
-        anchor: comments.length === 0,
-      }),
-    )
+    // Purely synthetic user messages (e.g. injected notifications from background
+    // workflows) are model-facing only — render the turn without the user bubble.
+    const allSynthetic =
+      userParts.length > 0 && userParts.every((part) => part.type === "text" && part.synthetic === true)
+    if (comments.length > 0 || !allSynthetic)
+      rows.push(
+        new TimelineRow.UserMessage({
+          userMessageID: userMessage.id,
+          anchor: comments.length === 0,
+        }),
+      )
 
     if (compaction) {
       rows.push(

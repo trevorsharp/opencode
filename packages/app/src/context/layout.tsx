@@ -18,6 +18,7 @@ import { migrateLegacySessionStateKeys, ServerScope, SessionStateKey } from "@/u
 import { createSessionKeyReader, ensureSessionKey, pruneSessionKeys } from "./layout-helpers"
 import { requireServerKey } from "@/utils/session-route"
 import { type DraftTab, useTabs } from "./tabs"
+import { mergeProjectMetadata } from "./project-enrich"
 
 export { createSessionKeyReader, ensureSessionKey, pruneSessionKeys }
 
@@ -274,7 +275,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           opened: false,
           width: DEFAULT_SIDEBAR_WIDTH,
           workspaces: {} as Record<string, boolean>,
-          workspacesDefault: false,
+          workspacesDefault: true,
         },
         terminal: {
           height: DEFAULT_TERMINAL_HEIGHT,
@@ -444,66 +445,12 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       // Preserve local icon override from per-workspace localStorage cache (childStore.icon).
       // Without this, different subdirectories of the same git repo would share the same
       // icon from the database instead of using their individual overrides.
-      const base = { ...metadata, ...project }
+      const base = mergeProjectMetadata(metadata, project, childStore.projectMeta)
       if (childStore.icon) {
         return { ...base, icon: { ...base.icon, override: childStore.icon } }
       }
       return base
     }
-
-    const roots = createMemo(() => {
-      const map = new Map<string, string>()
-      for (const project of serverSync().data.project) {
-        const sandboxes = project.sandboxes ?? []
-        for (const sandbox of sandboxes) {
-          map.set(sandbox, project.worktree)
-        }
-      }
-      return map
-    })
-
-    const rootFor = (directory: string) => {
-      const map = roots()
-      if (map.size === 0) return directory
-
-      const visited = new Set<string>()
-      const chain = [directory]
-
-      while (chain.length) {
-        const current = chain[chain.length - 1]
-        if (!current) return directory
-
-        const next = map.get(current)
-        if (!next) return current
-
-        if (visited.has(next)) return directory
-        visited.add(next)
-        chain.push(next)
-      }
-
-      return directory
-    }
-
-    createEffect(() => {
-      const projects = server.projects.list()
-      const seen = new Set(projects.map((project) => project.worktree))
-
-      batch(() => {
-        for (const project of projects) {
-          const root = rootFor(project.worktree)
-          if (root === project.worktree) continue
-
-          server.projects.close(project.worktree)
-
-          if (!seen.has(root)) {
-            server.projects.open(root)
-            seen.add(root)
-          }
-
-          if (project.expanded) server.projects.expand(root)
-        }
-      })
-    })
 
     const enriched = createMemo(() => server.projects.list().map(enrich))
     const list = createMemo(() => {
@@ -614,10 +561,9 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       projects: {
         list,
         open(directory: string) {
-          const root = rootFor(directory)
-          if (server.projects.list().find((x) => x.worktree === root)) return
-          void serverSync().project.loadSessions(root)
-          server.projects.open(root)
+          if (server.projects.list().find((x) => x.worktree === directory)) return
+          void serverSync().project.loadSessions(directory)
+          server.projects.open(directory)
         },
         close(directory: string) {
           server.projects.close(directory)
