@@ -72,7 +72,10 @@ export class OutputFormatJsonSchema extends Schema.Class<OutputFormatJsonSchema>
   retryCount: NonNegativeInt.pipe(Schema.optional, Schema.withDecodingDefault(Effect.succeed(2))),
 }) {}
 
-export const Format = Schema.Union([OutputFormatText, OutputFormatJsonSchema]).annotate({
+export const Format = Schema.Union([
+  Schema.Struct(OutputFormatText.fields),
+  Schema.Struct(OutputFormatJsonSchema.fields),
+]).annotate({
   discriminator: "type",
   identifier: "OutputFormat",
 })
