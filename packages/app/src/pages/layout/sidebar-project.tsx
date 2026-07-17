@@ -1,6 +1,7 @@
 import { createMemo, For, Show, type Accessor, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { base64Encode } from "@opencode-ai/core/util/encode"
+import { getFilename } from "@opencode-ai/core/util/path"
 import { Button } from "@opencode-ai/ui/button"
 import { ContextMenu } from "@opencode-ai/ui/context-menu"
 import { HoverCard } from "@opencode-ai/ui/hover-card"
@@ -27,6 +28,11 @@ export type ProjectSidebarContext = {
   openSidebar: () => void
   closeProject: (directory: string) => void
   showEditProjectDialog: (project: LocalProject) => void
+  openRemoteVSCode: (directory: string) => void
+  openPullRequest: (directory: string) => void
+  copyPath: (directory: string) => void
+  canOpenRemoteVSCode: Accessor<boolean>
+  canOpenPR: (directory: string) => boolean
   toggleProjectWorkspaces: (project: LocalProject) => void
   workspacesEnabled: (project: LocalProject) => boolean
   workspaceIds: (project: LocalProject) => string[]
@@ -60,6 +66,7 @@ const ProjectTile = (props: {
   overlay: Accessor<boolean>
   suppressHover: Accessor<boolean>
   dirs: Accessor<string[]>
+  ctx: ProjectSidebarContext
   onProjectMouseEnter: (worktree: string, event: MouseEvent) => void
   onProjectMouseLeave: (worktree: string) => void
   onProjectFocus: (worktree: string) => void
@@ -152,6 +159,24 @@ const ProjectTile = (props: {
             <ContextMenu.ItemLabel>{props.language.t("common.edit")}</ContextMenu.ItemLabel>
           </ContextMenu.Item>
           <ContextMenu.Item
+            disabled={!props.ctx.canOpenRemoteVSCode()}
+            onSelect={() => props.ctx.openRemoteVSCode(props.project.worktree)}
+          >
+            <ContextMenu.ItemLabel>
+              {props.language.t("session.header.open.ariaLabel", {
+                app: props.language.t("session.header.open.app.vscode"),
+              })}
+            </ContextMenu.ItemLabel>
+          </ContextMenu.Item>
+          <Show when={props.ctx.canOpenPR(props.project.worktree)}>
+            <ContextMenu.Item onSelect={() => props.ctx.openPullRequest(props.project.worktree)}>
+              <ContextMenu.ItemLabel>{props.language.t("session.header.openPR")}</ContextMenu.ItemLabel>
+            </ContextMenu.Item>
+          </Show>
+          <ContextMenu.Item onSelect={() => props.ctx.copyPath(props.project.worktree)}>
+            <ContextMenu.ItemLabel>{props.language.t("session.header.open.copyPath")}</ContextMenu.ItemLabel>
+          </ContextMenu.Item>
+          <ContextMenu.Item
             data-action="project-workspaces-toggle"
             data-project={base64Encode(props.project.worktree)}
             disabled={props.project.vcs !== "git" && !props.workspacesEnabled(props.project)}
@@ -201,7 +226,6 @@ const ProjectPreviewPanel = (props: {
     <div class="px-4 pt-2 pb-1 flex items-center gap-2">
       <div class="text-14-medium text-text-strong truncate grow">{displayName(props.project)}</div>
     </div>
-    <div class="px-4 pb-2 text-12-medium text-text-weak">{props.language.t("sidebar.project.recentSessions")}</div>
     <div class="px-2 pb-2 flex flex-col gap-2">
       <Show
         when={props.workspaceEnabled()}
@@ -213,6 +237,7 @@ const ProjectPreviewPanel = (props: {
                 session={session}
                 list={props.projectSessions()}
                 slug={base64Encode(props.project.worktree)}
+                root={props.project.worktree}
                 dense
                 showTooltip
                 mobile={props.mobile}
@@ -221,6 +246,20 @@ const ProjectPreviewPanel = (props: {
           </For>
         }
       >
+        <For each={props.projectSessions().slice(0, 2)}>
+          {(session) => (
+            <SessionItem
+              {...props.ctx.sessionProps}
+              session={session}
+              list={props.projectSessions()}
+              slug={base64Encode(props.project.worktree)}
+              root={props.project.worktree}
+              dense
+              showTooltip
+              mobile={props.mobile}
+            />
+          )}
+        </For>
         <For each={props.workspaces()}>
           {(directory) => {
             const sessions = createMemo(() => props.workspaceSessions(directory))
@@ -239,6 +278,7 @@ const ProjectPreviewPanel = (props: {
                       session={session}
                       list={sessions()}
                       slug={base64Encode(directory)}
+                      root={props.project.worktree}
                       dense
                       showTooltip
                       mobile={props.mobile}
@@ -278,7 +318,9 @@ export const SortableProject = (props: {
   const language = useLanguage()
   const sortable = createSortable(props.project.worktree)
   const selected = createMemo(() => props.ctx.currentProject()?.worktree === props.project.worktree)
-  const workspaces = createMemo(() => props.ctx.workspaceIds(props.project).slice(0, 2))
+  const workspaces = createMemo(() =>
+    props.ctx.workspaceIds(props.project).filter((directory) => directory !== props.project.worktree),
+  )
   const workspaceEnabled = createMemo(() => props.ctx.workspacesEnabled(props.project))
   const dirs = createMemo(() => props.ctx.workspaceIds(props.project))
   const [state, setState] = createStore({
@@ -297,6 +339,7 @@ export const SortableProject = (props: {
     const [data] = serverSync().child(directory, { bootstrap: false })
     const kind =
       directory === props.project.worktree ? language.t("workspace.type.local") : language.t("workspace.type.sandbox")
+    if (props.project.id?.startsWith("feature:")) return getFilename(directory)
     const name = props.ctx.workspaceLabel(directory, data.vcs?.branch, props.project.id)
     return `${kind} : ${name}`
   }
@@ -326,6 +369,7 @@ export const SortableProject = (props: {
       overlay={overlay}
       suppressHover={() => state.suppressHover}
       dirs={dirs}
+      ctx={props.ctx}
       onProjectMouseEnter={props.ctx.onProjectMouseEnter}
       onProjectMouseLeave={props.ctx.onProjectMouseLeave}
       onProjectFocus={props.ctx.onProjectFocus}

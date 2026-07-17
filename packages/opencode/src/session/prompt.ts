@@ -1082,6 +1082,7 @@ const layer = Layer.effect(
       function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
         let structured: unknown
+        let structuredOutputRetries = 0
         let step = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
@@ -1091,6 +1092,18 @@ const layer = Layer.effect(
 
           let msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
             Effect.provideService(Database.Service, database),
+          )
+
+          // Messages made up entirely of UI-only parts (injected workflow
+          // progress widgets) are display state — they must not steer loop
+          // control (their unfinished tool parts read as pending work and
+          // trigger assistant-prefill continuations) or reach the model.
+          msgs = msgs.filter(
+            (msg) =>
+              !(
+                msg.parts.length > 0 &&
+                msg.parts.every((part) => part.type === "tool" && (part.state as any)?.metadata?.uiOnly === true)
+              ),
           )
 
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
@@ -1307,9 +1320,28 @@ const layer = Layer.effect(
                 return "break" as const
               }
               if (format.type === "json_schema") {
+                if (structuredOutputRetries < (format.retryCount ?? 2)) {
+                  structuredOutputRetries++
+                  const retryUser: SessionV1.User = {
+                    ...lastUser,
+                    id: MessageID.ascending(),
+                    time: { created: Date.now() },
+                    format: new SessionV1.OutputFormatJsonSchema(format),
+                  }
+                  yield* sessions.updateMessage(retryUser)
+                  yield* sessions.updatePart({
+                    id: PartID.ascending(),
+                    messageID: retryUser.id,
+                    sessionID,
+                    type: "text",
+                    text: "The previous response did not use the StructuredOutput tool. Retry now and call StructuredOutput with output that matches the requested schema.",
+                    synthetic: true,
+                  } satisfies SessionV1.TextPart)
+                  return "continue" as const
+                }
                 handle.message.error = new SessionV1.StructuredOutputError({
                   message: "Model did not produce structured output",
-                  retries: 0,
+                  retries: structuredOutputRetries,
                 }).toObject()
                 yield* sessions.updateMessage(handle.message)
                 return "break" as const

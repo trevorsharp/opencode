@@ -107,7 +107,7 @@ export function createServerProjects<T extends ServerProjectState>(input: {
         )
       }
       if (current().some((project) => project.worktree === directory)) return
-      setStore("projects", scope, [{ worktree: directory, expanded: true }, ...current()])
+      setStore("projects", scope, [...current(), { worktree: directory, expanded: true }])
     },
     // User-initiated close: removes the project and records it in recently closed.
     // Internal, non-user removals (e.g. sandbox/worktree normalization) should use remove().

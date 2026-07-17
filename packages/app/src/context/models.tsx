@@ -5,6 +5,7 @@ import { filter, firstBy, flat, groupBy, mapValues, pipe, uniqueBy, values } fro
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { useProviders } from "@/hooks/use-providers"
 import { Persist, persisted } from "@/utils/persist"
+import modelDefaults from "@/config/model-defaults.json"
 
 export type ModelKey = { providerID: string; modelID: string }
 
@@ -14,6 +15,7 @@ type Store = {
   user: User[]
   recent: ModelKey[]
   variant?: Record<string, string | undefined>
+  defaults: ModelKey[] | null
 }
 
 const RECENT_LIMIT = 5
@@ -28,14 +30,28 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
   init: (props: { directory?: Accessor<string | undefined> } = {}) => {
     const providers = useProviders(props.directory)
 
-    const [store, setStore, _, ready] = persisted(
-      Persist.global("model", ["model.v1"]),
+    const [store, setStore, init, ready] = persisted(
+      {
+        ...Persist.global("model", ["model.v1"]),
+        migrate: (value: unknown) => {
+          if (!value || typeof value !== "object" || Array.isArray(value) || "defaults" in value) return value
+          return { ...value, defaults: null }
+        },
+      },
       createStore<Store>({
         user: [],
         recent: [],
         variant: {},
+        defaults: modelDefaults.models,
       }),
     )
+
+    if (init === null) setStore("defaults", modelDefaults.models)
+    if (init instanceof Promise) {
+      void init.then((value) => {
+        if (value === null) setStore("defaults", modelDefaults.models)
+      })
+    }
 
     const available = createMemo(() =>
       providers.connected().flatMap((p) =>
@@ -86,6 +102,7 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
     )
 
     const latestSet = createMemo(() => new Set(latest().map((x) => modelKey(x))))
+    const defaultSet = createMemo(() => new Set(store.defaults?.map((x) => modelKey(x))))
 
     const visibility = createMemo(() => {
       const map = new Map<string, Visibility>()
@@ -117,6 +134,7 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
       const state = visibility().get(key)
       if (state === "hide") return false
       if (state === "show") return true
+      if (store.defaults) return defaultSet().has(key)
       if (latestSet().has(key)) return true
       const date = release().get(key)
       if (!date?.isValid) return true
@@ -160,6 +178,7 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
       find,
       visible,
       setVisibility,
+      default: () => store.defaults?.[0],
       recent: {
         list: () => recentModels()!,
         push,

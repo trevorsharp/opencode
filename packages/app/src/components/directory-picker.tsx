@@ -15,6 +15,7 @@ type DirectoryPickerInput = {
   title?: string
   multiple?: boolean
   onSelect: (result: string | string[] | null) => void
+  onCreateWorkspace?: (name: string) => Promise<string | undefined>
 }
 
 export function useDirectoryPicker() {

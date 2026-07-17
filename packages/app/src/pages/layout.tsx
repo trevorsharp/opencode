@@ -12,7 +12,7 @@ import {
   type Accessor,
 } from "solid-js"
 import { makeEventListener } from "@solid-primitives/event-listener"
-import { useNavigate, useParams } from "@solidjs/router"
+import { useLocation, useNavigate, useParams } from "@solidjs/router"
 import { useLayout, LocalProject } from "@/context/layout"
 import { useServerSync } from "@/context/server-sync"
 import { Persist, persisted } from "@/utils/persist"
@@ -25,8 +25,9 @@ import { IconButton } from "@opencode-ai/ui/icon-button"
 import { Tooltip } from "@opencode-ai/ui/tooltip"
 import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { Dialog } from "@opencode-ai/ui/dialog"
+import { TextField } from "@opencode-ai/ui/text-field"
 import { getFilename } from "@opencode-ai/core/util/path"
-import { Session } from "@opencode-ai/sdk/v2/client"
+import { Session, type Worktree } from "@opencode-ai/sdk/v2/client"
 import { usePlatform } from "@/context/platform"
 import { useSettings } from "@/context/settings"
 import { createStore, produce, reconcile } from "solid-js/store"
@@ -48,6 +49,8 @@ import { setNavigate } from "@/utils/notification-click"
 import { Worktree as WorktreeState } from "@/utils/worktree"
 import { setSessionHandoff } from "@/pages/session/handoff"
 import { SessionRouteKey, SessionStateKey } from "@/utils/server-scope"
+import { Identifier } from "@/utils/id"
+import { same } from "@/utils/same"
 
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useTheme, type ColorScheme } from "@opencode-ai/ui/theme/context"
@@ -76,12 +79,15 @@ import {
 import { createInlineEditorController } from "./layout/inline-editor"
 import {
   LocalWorkspace,
+  LocalWorkspaceSessions,
   SortableWorkspace,
   WorkspaceDragOverlay,
   type WorkspaceSidebarContext,
 } from "./layout/sidebar-workspace"
 import { ProjectDragOverlay, SortableProject, type ProjectSidebarContext } from "./layout/sidebar-project"
 import { SidebarContent } from "./layout/sidebar-shell"
+
+const VSCODE_REMOTE_BASE = "vscode://vscode-remote/ssh-remote+code-server"
 
 export default function LegacyLayout(props: ParentProps) {
   const serverSDK = useServerSDK()
@@ -96,6 +102,8 @@ export default function LegacyLayout(props: ParentProps) {
       workspaceBranchName: {} as Record<string, Record<string, string>>,
       workspaceExpanded: {} as Record<string, boolean>,
       gettingStartedDismissed: false,
+      prOpening: false,
+      prCreating: false,
     }),
   )
 
@@ -116,6 +124,7 @@ export default function LegacyLayout(props: ParentProps) {
   const notification = useNotification()
   const permission = usePermission()
   const navigate = useNavigate()
+  const routeLocation = useLocation()
   setNavigate(navigate)
   const providers = useProviders()
   const dialog = useDialog()
@@ -123,6 +132,27 @@ export default function LegacyLayout(props: ParentProps) {
   const theme = useTheme()
   const language = useLanguage()
   createEffect(() => setV2Toast(false))
+  onMount(() => {
+    if (!window.matchMedia("(display-mode: standalone)").matches) return
+
+    const viewport = window.visualViewport
+    const root = document.getElementById("root")
+    if (!viewport || !root) return
+
+    const syncViewport = () => {
+      if (!viewport.height) return
+      root.style.height = `${viewport.height}px`
+      root.style.transform = `translateY(${viewport.offsetTop}px)`
+    }
+
+    syncViewport()
+    makeEventListener(viewport, "resize", syncViewport)
+    makeEventListener(viewport, "scroll", syncViewport)
+    onCleanup(() => {
+      root.style.removeProperty("height")
+      root.style.removeProperty("transform")
+    })
+  })
   const initialDirectory = decode64(params.dir)
   const route = createMemo(() => {
     const slug = params.dir
@@ -145,10 +175,17 @@ export default function LegacyLayout(props: ParentProps) {
   }
   const colorSchemeLabel = (scheme: ColorScheme) => language.t(colorSchemeKey[scheme])
   const currentDir = createMemo(() => route().dir)
+  const rootParam = createMemo(() => {
+    const value = new URLSearchParams(routeLocation.search).get("root")
+    if (!value) return
+    return decode64(value)
+  })
+  const canOpenRemoteVSCode = createMemo(() => platform.platform === "web" && !!server.isLocal())
 
   const [state, setState] = createStore({
     autoselect: !initialDirectory,
     busyWorkspaces: {} as Record<string, boolean>,
+    pendingWorkspaces: {} as Record<string, { directory: string; root: string }>,
     hoverProject: undefined as string | undefined,
     scrollSessionKey: undefined as string | undefined,
     nav: undefined as HTMLElement | undefined,
@@ -171,14 +208,21 @@ export default function LegacyLayout(props: ParentProps) {
   }
 
   const editor = createInlineEditorController()
-  const setBusy = (directory: string, value: boolean) => {
+  const setBusy = (directory: string, value: boolean, root?: string) => {
     const key = pathKey(directory)
     if (value) {
       setState("busyWorkspaces", key, true)
+      if (root) setState("pendingWorkspaces", key, { directory, root })
       return
     }
     setState(
       "busyWorkspaces",
+      produce((draft) => {
+        delete draft[key]
+      }),
+    )
+    setState(
+      "pendingWorkspaces",
       produce((draft) => {
         delete draft[key]
       }),
@@ -252,14 +296,14 @@ export default function LegacyLayout(props: ParentProps) {
     setHoverProject(undefined)
   }
 
-  const arm = () => {
+  const arm = (delay = 300) => {
     if (layout.sidebar.opened()) return
     if (state.hoverProject === undefined) return
     disarm()
     navLeave.current = window.setTimeout(() => {
       navLeave.current = undefined
       setHoverProject(undefined)
-    }, 300)
+    }, delay)
   }
 
   let peekt: number | undefined
@@ -328,6 +372,25 @@ export default function LegacyLayout(props: ParentProps) {
     layout.mobileSidebar.hide()
   }
 
+  const focusSessionPrompt = () => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        document.querySelector<HTMLElement>('[data-component="prompt-input"]')?.focus()
+      })
+    })
+  }
+
+  function sessionHref(directory: string, sessionID?: string, root = activeProjectRoot(directory)) {
+    const href = `/${base64Encode(directory)}/session${sessionID ? `/${sessionID}` : ""}`
+    if (pathKey(root) === pathKey(directory)) return href
+    return `${href}?root=${base64Encode(root)}`
+  }
+
+  function navigateToNewSession(directory: string, root = directory) {
+    navigateWithSidebarReset(sessionHref(directory, undefined, root))
+    focusSessionPrompt()
+  }
+
   function cycleTheme(direction = 1) {
     const ids = availableThemeEntries().map(([id]) => id)
     if (ids.length === 0) return
@@ -390,6 +453,8 @@ export default function LegacyLayout(props: ParentProps) {
         if (e.details?.type === "worktree.ready") {
           setBusy(e.name, false)
           WorktreeState.ready(serverSDK().scope, e.name)
+          const project = layout.projects.list().find((item) => item.worktree === projectRoot(e.name))
+          if (project) void refreshWorkspaceList(project)
           return
         }
 
@@ -497,6 +562,135 @@ export default function LegacyLayout(props: ParentProps) {
 
   useSDKNotificationToasts()
 
+  function showRequestError(err: unknown) {
+    showToast({
+      variant: "error",
+      title: language.t("common.requestFailed"),
+      description: errorMessage(err, language.t("common.requestFailed")),
+    })
+  }
+
+  function openRemoteVSCode(directory: string) {
+    if (!directory || !canOpenRemoteVSCode()) return
+    platform.openLink(`${VSCODE_REMOTE_BASE}${encodeURI(directory)}?windowId=_blank`)
+  }
+
+  function copyPath(directory: string) {
+    if (!directory) return
+    navigator.clipboard
+      .writeText(directory)
+      .then(() => {
+        showToast({
+          variant: "success",
+          icon: "circle-check",
+          title: language.t("session.share.copy.copied"),
+          description: directory,
+        })
+      })
+      .catch(showRequestError)
+  }
+
+  function projectContainsDirectory(project: LocalProject, directory: string) {
+    const key = pathKey(directory)
+    if (pathKey(project.worktree) === key) return true
+    const directories = project.id?.startsWith("feature:")
+      ? (store.workspaceOrder[project.worktree] ?? [])
+      : (project.sandboxes ?? [])
+    return directories.some((item) => pathKey(item) === key)
+  }
+
+  function projectForDirectory(directory: string) {
+    return layout.projects.list().find((project) => projectContainsDirectory(project, directory))
+  }
+
+  function isPullRequestDirectory(directory: string) {
+    const [data] = serverSync().child(directory, { bootstrap: false })
+    if (data.vcs) return true
+
+    const project = projectForDirectory(directory)
+    if (!project) return false
+    if (project.id?.startsWith("feature:")) return pathKey(directory) !== pathKey(project.worktree)
+    if (project.vcs === "git") return true
+    return pathKey(directory) !== pathKey(project.worktree)
+  }
+
+  function canOpenPR(directory: string) {
+    return !!server.isLocal() && isPullRequestDirectory(directory)
+  }
+
+  async function sendCreatePrPrompt(directory: string) {
+    if (store.prCreating) return
+    setStore("prCreating", true)
+    try {
+      const session = await serverSDK()
+        .client.session.create({ directory })
+        .then((result) => result.data)
+      if (!session) throw new Error(language.t("prompt.toast.sessionCreateFailed.title"))
+      navigateWithSidebarReset(sessionHref(directory, session.id))
+      await serverSDK().client.session.promptAsync({
+        sessionID: session.id,
+        directory,
+        parts: [
+          {
+            id: Identifier.ascending("part"),
+            type: "text",
+            text: language.t("session.header.openPR.prompt"),
+          },
+        ],
+      })
+    } catch (err) {
+      showRequestError(err)
+    } finally {
+      setStore("prCreating", false)
+    }
+  }
+
+  async function openPullRequest(directory: string) {
+    if (store.prOpening || store.prCreating || !canOpenPR(directory)) return
+    setStore("prOpening", true)
+    try {
+      const result = await serverSDK()
+        .client.project.openPullRequest({ directory })
+        .then((response) => response.data)
+      if (!result) throw new Error(language.t("common.requestFailed"))
+      if (result.status === "found") {
+        platform.openLink(result.url)
+        return
+      }
+      dialog.show(() => <DialogCreatePullRequest onCreate={() => void sendCreatePrPrompt(directory)} />)
+    } catch (err) {
+      showRequestError(err)
+    } finally {
+      setStore("prOpening", false)
+    }
+  }
+
+  function DialogCreatePullRequest(props: { onCreate: () => void }) {
+    return (
+      <Dialog title={language.t("session.header.openPR.dialog.title")} fit>
+        <div class="flex flex-col gap-4 pl-6 pr-2.5 pb-3">
+          <span class="text-14-regular text-text-strong">{language.t("session.header.openPR.dialog.description")}</span>
+          <div class="flex justify-end gap-2">
+            <Button variant="ghost" size="large" onClick={() => dialog.close()}>
+              {language.t("common.cancel")}
+            </Button>
+            <Button
+              variant="primary"
+              size="large"
+              disabled={store.prCreating}
+              onClick={() => {
+                dialog.close()
+                props.onCreate()
+              }}
+            >
+              {language.t("session.header.openPR.dialog.create")}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+    )
+  }
+
   function scrollToSession(sessionId: string, sessionKey: string) {
     if (!scrollContainerRef) return
     if (state.scrollSessionKey === sessionKey) return
@@ -515,15 +709,21 @@ export default function LegacyLayout(props: ParentProps) {
   const currentProject = createMemo(() => {
     const directory = currentDir()
     if (!directory) return
-    const key = pathKey(directory)
 
     const projects = layout.projects.list()
+    const queryRoot = rootParam()
+    if (queryRoot) {
+      const project = projects.find((p) => pathKey(p.worktree) === pathKey(queryRoot))
+      if (project) return project
+    }
 
-    const sandbox = projects.find((p) => p.sandboxes?.some((item) => pathKey(item) === key))
-    if (sandbox) return sandbox
+    const key = pathKey(directory)
 
     const direct = projects.find((p) => pathKey(p.worktree) === key)
     if (direct) return direct
+
+    const sandbox = projects.find((p) => p.sandboxes?.some((item) => pathKey(item) === key))
+    if (sandbox) return sandbox
 
     const [child] = serverSync().child(directory, { bootstrap: false })
     const id = child.project
@@ -565,6 +765,7 @@ export default function LegacyLayout(props: ParentProps) {
 
   const setWorkspaceName = (directory: string, next: string, projectId?: string, branch?: string) => {
     const key = pathKey(directory)
+    if (store.workspaceName[key] === next) return
     setStore("workspaceName", key, next)
     if (!projectId) return
     if (!branch) return
@@ -577,12 +778,61 @@ export default function LegacyLayout(props: ParentProps) {
   const workspaceLabel = (directory: string, branch?: string, projectId?: string) =>
     workspaceName(directory, projectId, branch) ?? branch ?? getFilename(directory)
 
+  const applyWorkspaceList = (project: LocalProject, workspaces: Worktree[]) => {
+    const directories = workspaces
+      .map((item) => item.directory)
+      .filter((directory) => pathKey(directory) !== pathKey(project.worktree))
+    for (const item of workspaces) {
+      setWorkspaceName(item.directory, item.description ?? item.branch ?? item.name, project.id, item.branch)
+    }
+    const target = serverSync().data.project.find((item) => item.worktree === project.worktree)
+    if (!same(target?.sandboxes?.map(pathKey), directories.map(pathKey))) {
+      serverSync().set(
+        "project",
+        produce((draft) => {
+          const target = draft.find((item) => item.worktree === project.worktree)
+          if (!target) return
+          target.sandboxes = directories
+        }),
+      )
+    }
+    setStore("workspaceOrder", project.worktree, (order) => {
+      const next = (order ?? []).filter((directory) => {
+        if (isBusy(directory)) return true
+        return directories.some((item) => pathKey(item) === pathKey(directory))
+      })
+      return same(order, next) ? order : next
+    })
+  }
+
+  const refreshWorkspaceList = async (project: LocalProject) => {
+    const workspaces = await serverSDK()
+      .client.worktree.list({ directory: project.worktree })
+      .then((x) => x.data ?? [])
+      .catch(() => undefined)
+    if (!workspaces) return [] as Worktree[]
+    applyWorkspaceList(project, workspaces)
+    return workspaces
+  }
+
   const workspaceSetting = createMemo(() => {
     const project = currentProject()
     if (!project) return false
-    if (project.vcs !== "git") return false
-    return layout.sidebar.workspaces(project.worktree)()
+    if (project.vcs !== "git" && !isWorkspaceRootProject(project)) return false
+    return true
   })
+
+  createEffect(
+    on(
+      () => currentProject()?.worktree,
+      () => {
+        const project = currentProject()
+        if (!project || !isFeatureProject(project)) return
+        void refreshWorkspaceList(project)
+      },
+      { defer: true },
+    ),
+  )
 
   const visibleSessionDirs = createMemo(() => {
     const project = currentProject()
@@ -608,6 +858,7 @@ export default function LegacyLayout(props: ParentProps) {
         (item) => pathKey(item.worktree) === key || item.sandboxes?.some((sandbox) => pathKey(sandbox) === key),
       )
       if (!project) continue
+      if (isWorkspaceRootProject(project)) continue
       if (project.vcs === "git" && layout.sidebar.workspaces(project.worktree)()) continue
       setStore("workspaceExpanded", directory, false)
     }
@@ -887,9 +1138,9 @@ export default function LegacyLayout(props: ParentProps) {
     )
     if (session.id === params.id) {
       if (nextSession) {
-        navigate(`/${params.dir}/session/${nextSession.id}`)
+        navigate(sessionHref(nextSession.directory, nextSession.id))
       } else {
-        navigate(`/${params.dir}/session`)
+        navigate(sessionHref(session.directory))
       }
     }
   }
@@ -991,7 +1242,7 @@ export default function LegacyLayout(props: ParentProps) {
         onSelect: () => {
           const project = currentProject()
           if (!project) return
-          return createWorkspace(project)
+          showCreateWorkspaceDialog(project)
         },
       },
       {
@@ -1121,10 +1372,14 @@ export default function LegacyLayout(props: ParentProps) {
   }
 
   function projectRoot(directory: string) {
+    const queryRoot = rootParam()
+    if (queryRoot && pathKey(directory) === pathKey(currentDir())) return queryRoot
+
     const key = pathKey(directory)
-    const project = layout.projects
-      .list()
-      .find((item) => pathKey(item.worktree) === key || item.sandboxes?.some((sandbox) => pathKey(sandbox) === key))
+    const direct = layout.projects.list().find((item) => pathKey(item.worktree) === key)
+    if (direct) return direct.worktree
+
+    const project = layout.projects.list().find((item) => item.sandboxes?.some((sandbox) => pathKey(sandbox) === key))
     if (project) return project.worktree
 
     const known = Object.entries(store.workspaceOrder).find(
@@ -1163,7 +1418,7 @@ export default function LegacyLayout(props: ParentProps) {
     rememberSessionRoute(directory, id, root)
     notification.session.markViewed(id)
     const expanded = untrack(() => store.workspaceExpanded[directory])
-    if (expanded === false) {
+    if (expanded !== true) {
       setStore("workspaceExpanded", directory, true)
     }
     requestAnimationFrame(() => scrollToSession(id, `${directory}:${id}`))
@@ -1186,7 +1441,7 @@ export default function LegacyLayout(props: ParentProps) {
       if (!target || target === root || canOpen(target)) return canOpen(target)
       const listed = await serverSDK()
         .client.worktree.list({ directory: root })
-        .then((x) => x.data ?? [])
+        .then((x) => x.data?.map((item) => item.directory) ?? [])
         .catch(() => [] as string[])
       dirs = effectiveWorkspaceOrder(root, [root, ...listed], store.workspaceOrder[root])
       return canOpen(target)
@@ -1196,7 +1451,7 @@ export default function LegacyLayout(props: ParentProps) {
       const sync = serverSync().ensureDirSyncContext(target.directory)
       if (sync.session.get(target.id)) {
         setStore("lastProjectSession", root, { directory: target.directory, id: target.id, at: Date.now() })
-        navigateWithSidebarReset(`/${base64Encode(target.directory)}/session/${target.id}`)
+        navigateWithSidebarReset(sessionHref(target.directory, target.id, root))
         return true
       }
       const resolved = await sync.session
@@ -1206,7 +1461,7 @@ export default function LegacyLayout(props: ParentProps) {
       if (!resolved?.directory) return false
       if (!canOpen(resolved.directory)) return false
       setStore("lastProjectSession", root, { directory: resolved.directory, id: resolved.id, at: Date.now() })
-      navigateWithSidebarReset(`/${base64Encode(resolved.directory)}/session/${resolved.id}`)
+      navigateWithSidebarReset(sessionHref(resolved.directory, resolved.id, root))
       return true
     }
 
@@ -1242,17 +1497,39 @@ export default function LegacyLayout(props: ParentProps) {
       return
     }
 
-    navigateWithSidebarReset(`/${base64Encode(root)}/session`)
+    navigateWithSidebarReset(sessionHref(root, undefined, root))
   }
 
   function navigateToSession(session: Session | undefined) {
     if (!session) return
-    navigateWithSidebarReset(`/${base64Encode(session.directory)}/session/${session.id}`)
+    navigateWithSidebarReset(sessionHref(session.directory, session.id))
   }
 
   function openProject(directory: string, navigate = true) {
     layout.projects.open(directory)
+    void serverSync()
+      .project.refresh()
+      .catch(() => undefined)
     if (navigate) return navigateToProject(directory)
+  }
+
+  async function createEmptyWorkspace(name: string) {
+    const directory = serverSync().data.path.directory || serverSync().data.path.home
+    const created = await serverSDK()
+      .client.worktree.create({
+        ...(directory ? { directory } : {}),
+        worktreeCreateInput: { name, workspaceOnly: true },
+      })
+      .then((result) => result.data)
+      .catch((error) => {
+        showToast({
+          title: language.t("workspace.create.failed.title"),
+          description: errorMessage(error, language.t("common.requestFailed")),
+        })
+        return undefined
+      })
+    if (!created?.directory) return
+    return created.directory
   }
 
   const handleDeepLinks = (urls: string[]) => {
@@ -1293,7 +1570,11 @@ export default function LegacyLayout(props: ParentProps) {
     const name = next === getFilename(project.worktree) ? "" : next
 
     if (project.id && project.id !== "global") {
-      await serverSDK().client.project.update({ projectID: project.id, directory: project.worktree, name })
+      await serverSDK().client.project.update({
+        projectID: project.id,
+        directory: project.worktree,
+        name: isWorkspaceRootProject(project) ? next : name,
+      })
       return
     }
 
@@ -1303,7 +1584,20 @@ export default function LegacyLayout(props: ParentProps) {
   const renameWorkspace = (directory: string, next: string, projectId?: string, branch?: string) => {
     const current = workspaceName(directory, projectId, branch) ?? branch ?? getFilename(directory)
     if (current === next) return
-    setWorkspaceName(directory, next, projectId, branch)
+    const root = projectRoot(directory)
+    if (!projectId || projectId === "global") {
+      setWorkspaceName(directory, next, projectId, branch)
+      return
+    }
+
+    void serverSDK()
+      .client.project.update({ projectID: projectId, directory, name: next })
+      .then(() => {
+        setWorkspaceName(directory, next, projectId, branch)
+        const project = layout.projects.list().find((item) => item.worktree === root)
+        if (project) void refreshWorkspaceList(project)
+      })
+      .catch(showRequestError)
   }
 
   function closeProject(directory: string) {
@@ -1326,7 +1620,7 @@ export default function LegacyLayout(props: ParentProps) {
 
     const next = list[index + 1] ?? list[index - 1]
 
-    navigateWithSidebarReset(`/${base64Encode(next.worktree)}/session`)
+    navigateWithSidebarReset(sessionHref(next.worktree, undefined, next.worktree))
     layout.projects.close(directory)
     queueMicrotask(() => {
       void navigateToProject(next.worktree)
@@ -1339,8 +1633,20 @@ export default function LegacyLayout(props: ParentProps) {
       layout.sidebar.toggleWorkspaces(project.worktree)
       return
     }
-    if (project.vcs !== "git") return
+    if (project.vcs !== "git" && !isWorkspaceRootProject(project)) return
     layout.sidebar.toggleWorkspaces(project.worktree)
+    void refreshWorkspaceList(project)
+  }
+
+  function isFeatureProject(project: LocalProject | undefined) {
+    return project?.id?.startsWith("feature:") ?? false
+  }
+
+  function isWorkspaceRootProject(project: LocalProject | undefined) {
+    if (!project) return false
+    if (isFeatureProject(project)) return true
+    const root = `${pathKey(project.worktree)}/`
+    return project.sandboxes?.some((directory) => pathKey(directory).startsWith(root)) ?? false
   }
 
   const showEditProjectDialog = (conn: ServerConnection.Any, project: LocalProject) => {
@@ -1369,67 +1675,96 @@ export default function LegacyLayout(props: ParentProps) {
       server: conn,
       title: language.t("command.project.open"),
       multiple: true,
+      onCreateWorkspace: createEmptyWorkspace,
       onSelect: resolve,
     })
   }
 
-  const deleteWorkspace = async (root: string, directory: string, leaveDeletedWorkspace = false) => {
+  const removeFromWorkspace = async (root: string, directory: string, leaveRemovedWorkspace = false) => {
     if (directory === root) return
 
     const current = currentDir()
     const currentKey = pathKey(current)
-    const deletedKey = pathKey(directory)
-    const shouldLeave = leaveDeletedWorkspace || (!!params.dir && currentKey === deletedKey)
-    if (!leaveDeletedWorkspace && shouldLeave) {
-      navigateWithSidebarReset(`/${base64Encode(root)}/session`)
+    const removedKey = pathKey(directory)
+    const shouldLeave = leaveRemovedWorkspace || (!!params.dir && currentKey === removedKey)
+    if (!leaveRemovedWorkspace && shouldLeave) {
+      navigateWithSidebarReset(sessionHref(root, undefined, root))
     }
 
     setBusy(directory, true)
 
+    const sessions: Session[] = await serverSDK()
+      .client.session.list({ directory })
+      .then((x) => x.data ?? [])
+      .catch(() => [])
+
     const result = await serverSDK()
-      .client.worktree.remove({ directory: root, worktreeRemoveInput: { directory } })
+      .client.worktree.remove({ directory: root, worktreeRemoveInput: { directory, workspaceOnly: true } })
       .then((x) => x.data)
       .catch((err) => {
         showToast({
-          title: language.t("workspace.delete.failed.title"),
+          title: language.t("workspace.removeFromWorkspace.failed.title"),
           description: errorMessage(err, language.t("common.requestFailed")),
         })
-        return false
+        return undefined
       })
 
     setBusy(directory, false)
 
-    if (!result) return
+    if (!result?.removed) return
+
+    clearWorkspaceTerminals(
+      directory,
+      sessions.map((session) => session.id),
+      platform,
+      serverSDK().scope,
+    )
+    await serverSDK()
+      .client.instance.dispose({ directory })
+      .catch(() => undefined)
 
     if (pathKey(store.lastProjectSession[root]?.directory ?? "") === pathKey(directory)) {
       clearLastProjectSession(root)
     }
 
-    serverSync().set(
-      "project",
+    setStore(
+      "workspaceOrder",
       produce((draft) => {
-        const project = draft.find((item) => item.worktree === root)
-        if (!project) return
-        project.sandboxes = (project.sandboxes ?? []).filter((sandbox) => sandbox !== directory)
+        for (const key of Object.keys(draft)) {
+          draft[key] = draft[key]?.filter((workspace) => pathKey(workspace) !== removedKey) ?? []
+        }
       }),
     )
-    setStore("workspaceOrder", root, (order) => (order ?? []).filter((workspace) => workspace !== directory))
+    setStore(
+      produce((draft) => {
+        delete draft.workspaceName[removedKey]
+        delete draft.workspaceName[directory]
+        delete draft.workspaceExpanded[removedKey]
+        delete draft.workspaceExpanded[directory]
+      }),
+    )
+
+    if (result.featureDirectory) {
+      closeProject(result.featureDirectory)
+      if (pathKey(root) === pathKey(result.featureDirectory)) return
+    }
 
     layout.projects.close(directory)
     layout.projects.open(root)
+    const project = layout.projects.list().find((item) => item.worktree === root)
+    if (project) await refreshWorkspaceList(project)
 
     if (shouldLeave) return
 
     const nextCurrent = currentDir()
     const nextKey = pathKey(nextCurrent)
-    const project = layout.projects.list().find((item) => item.worktree === root)
     const dirs = project
       ? effectiveWorkspaceOrder(root, [root, ...(project.sandboxes ?? [])], store.workspaceOrder[root])
       : [root]
     const valid = dirs.some((item) => pathKey(item) === nextKey)
 
     if (params.dir && projectRoot(nextCurrent) === root && !valid) {
-      navigateWithSidebarReset(`/${base64Encode(root)}/session`)
+      navigateWithSidebarReset(sessionHref(root, undefined, root))
     }
   }
 
@@ -1514,57 +1849,35 @@ export default function LegacyLayout(props: ParentProps) {
     })
   }
 
-  function DialogDeleteWorkspace(props: { root: string; directory: string }) {
+  function DialogRemoveFromWorkspace(props: { root: string; directory: string }) {
     const name = createMemo(() => getFilename(props.directory))
-    const [data, setData] = createStore({
-      status: "loading" as "loading" | "ready" | "error",
-      dirty: false,
-    })
 
-    onMount(() => {
-      serverSDK()
-        .client.vcs.status({ directory: props.directory })
-        .then((x) => {
-          const files = x.data ?? []
-          const dirty = files.length > 0
-          setData({ status: "ready", dirty })
-        })
-        .catch(() => {
-          setData({ status: "error", dirty: false })
-        })
-    })
-
-    const handleDelete = () => {
-      const leaveDeletedWorkspace = !!params.dir && pathKey(currentDir()) === pathKey(props.directory)
-      if (leaveDeletedWorkspace) {
-        navigateWithSidebarReset(`/${base64Encode(props.root)}/session`)
+    const handleRemove = () => {
+      const leaveRemovedWorkspace = !!params.dir && pathKey(currentDir()) === pathKey(props.directory)
+      if (leaveRemovedWorkspace) {
+        navigateWithSidebarReset(sessionHref(props.root, undefined, props.root))
       }
       dialog.close()
-      void deleteWorkspace(props.root, props.directory, leaveDeletedWorkspace)
-    }
-
-    const description = () => {
-      if (data.status === "loading") return language.t("workspace.status.checking")
-      if (data.status === "error") return language.t("workspace.status.error")
-      if (!data.dirty) return language.t("workspace.status.clean")
-      return language.t("workspace.status.dirty")
+      void removeFromWorkspace(props.root, props.directory, leaveRemovedWorkspace)
     }
 
     return (
-      <Dialog title={language.t("workspace.delete.title")} fit>
+      <Dialog title={language.t("workspace.removeFromWorkspace.title")} fit>
         <div class="flex flex-col gap-4 pl-6 pr-2.5 pb-3">
           <div class="flex flex-col gap-1">
             <span class="text-14-regular text-text-strong">
-              {language.t("workspace.delete.confirm", { name: name() })}
+              {language.t("workspace.removeFromWorkspace.confirm", { name: name() })}
             </span>
-            <span class="text-12-regular text-text-weak">{description()}</span>
+            <span class="text-12-regular text-text-weak">
+              {language.t("workspace.removeFromWorkspace.description")}
+            </span>
           </div>
           <div class="flex justify-end gap-2">
             <Button variant="ghost" size="large" onClick={() => dialog.close()}>
               {language.t("common.cancel")}
             </Button>
-            <Button variant="primary" size="large" disabled={data.status === "loading"} onClick={handleDelete}>
-              {language.t("workspace.delete.button")}
+            <Button variant="primary" size="large" onClick={handleRemove}>
+              {language.t("workspace.removeFromWorkspace.button")}
             </Button>
           </div>
         </div>
@@ -1762,19 +2075,24 @@ export default function LegacyLayout(props: ParentProps) {
   function workspaceIds(project: LocalProject | undefined) {
     if (!project) return []
     const local = project.worktree
-    const dirs = [local, ...(project.sandboxes ?? [])]
+    const pending = Object.values(state.pendingWorkspaces)
+      .filter((item) => pathKey(item.root) === pathKey(local))
+      .map((item) => item.directory)
+    const dirs = [local, ...pending, ...(project.sandboxes ?? [])].filter(
+      (directory, index, list) => list.findIndex((item) => pathKey(item) === pathKey(directory)) === index,
+    )
     const active = currentProject()
     const directory = pathKey(active?.worktree ?? "") === pathKey(project.worktree) ? currentDir() : undefined
     const extra =
       directory && pathKey(directory) !== pathKey(local) && !dirs.some((item) => pathKey(item) === pathKey(directory))
         ? directory
         : undefined
-    const pending = extra ? WorktreeState.get(serverSDK().scope, extra)?.status === "pending" : false
+    const extraPending = extra ? WorktreeState.get(serverSDK().scope, extra)?.status === "pending" : false
 
     const ordered = effectiveWorkspaceOrder(local, dirs, store.workspaceOrder[project.worktree])
-    if (pending && extra) return [local, extra, ...ordered.filter((item) => item !== local)]
+    if (extraPending && extra) return [local, extra, ...ordered.filter((item) => item !== local)]
     if (!extra) return ordered
-    if (pending) return ordered
+    if (extraPending) return ordered
     return [...ordered, extra]
   }
 
@@ -1819,10 +2137,45 @@ export default function LegacyLayout(props: ParentProps) {
     setStore("activeWorkspace", undefined)
   }
 
-  const createWorkspace = async (project: LocalProject) => {
+  function DialogCreateWorkspace(props: { project: LocalProject }) {
+    const [data, setData] = createStore({ name: "" })
+    const submit = (event: SubmitEvent) => {
+      event.preventDefault()
+      const name = data.name.trim()
+      if (!name) return
+      dialog.close()
+      void createWorkspace(props.project, name)
+    }
+
+    return (
+      <Dialog title={language.t("workspace.create.title")} class="w-full max-w-[480px] mx-auto" fit>
+        <form data-component="create-workspace-dialog" onSubmit={submit} class="flex flex-col gap-4 px-6 pb-5">
+          <TextField
+            autofocus
+            placeholder={language.t("workspace.create.name.placeholder")}
+            value={data.name}
+            onChange={(value) => setData("name", value)}
+          />
+          <div class="flex justify-end gap-2">
+            <Button type="button" variant="ghost" size="large" onClick={() => dialog.close()}>
+              {language.t("common.cancel")}
+            </Button>
+            <Button type="submit" variant="primary" size="large" disabled={!data.name.trim()}>
+              {language.t("workspace.create.button")}
+            </Button>
+          </div>
+        </form>
+      </Dialog>
+    )
+  }
+
+  const createWorkspace = async (project: LocalProject, name?: string) => {
     clearSidebarHoverState()
     const created = await serverSDK()
-      .client.worktree.create({ directory: project.worktree })
+      .client.worktree.create({
+        directory: project.worktree,
+        worktreeCreateInput: name ? { name, workspaceOnly: false } : undefined,
+      })
       .then((x) => x.data)
       .catch((err) => {
         showToast({
@@ -1834,13 +2187,18 @@ export default function LegacyLayout(props: ParentProps) {
 
     if (!created?.directory) return
 
-    setWorkspaceName(created.directory, created.branch ?? getFilename(created.directory), project.id, created.branch)
+    setWorkspaceName(
+      created.directory,
+      created.description ?? created.branch ?? getFilename(created.directory),
+      project.id,
+      created.branch,
+    )
 
     const local = project.worktree
     const key = pathKey(created.directory)
     const root = pathKey(local)
 
-    setBusy(created.directory, true)
+    setBusy(created.directory, true, project.worktree)
     WorktreeState.pending(serverSDK().scope, created.directory)
     setStore("workspaceExpanded", key, true)
     if (key !== created.directory) {
@@ -1854,9 +2212,33 @@ export default function LegacyLayout(props: ParentProps) {
       })
       return [created.directory, ...next]
     })
+    await refreshWorkspaceList(project)
 
     serverSync().child(created.directory)
-    navigateWithSidebarReset(`/${base64Encode(created.directory)}/session`)
+    navigateWithSidebarReset(sessionHref(created.directory, undefined, project.worktree))
+  }
+
+  function showCreateWorkspaceDialog(project: LocalProject) {
+    dialog.show(() => <DialogCreateWorkspace project={project} />)
+  }
+
+  async function addProjectToFeature(feature: LocalProject) {
+    const conn = server.current
+    if (!conn) return
+    const name = displayName(feature)
+    const workspace = getFilename(feature.worktree)
+    const create = async (directory: string | undefined) => {
+      if (!directory) return
+      await createWorkspace({ worktree: directory, expanded: true }, workspace || name)
+      await refreshWorkspaceList(feature)
+      void navigateToProject(feature.worktree)
+    }
+
+    pickDirectory({
+      server: conn,
+      title: language.t("command.project.open"),
+      onSelect: (result) => void create((Array.isArray(result) ? result[0] : result) ?? undefined),
+    })
   }
 
   const workspaceSidebarCtx: WorkspaceSidebarContext = {
@@ -1879,8 +2261,13 @@ export default function LegacyLayout(props: ParentProps) {
     setWorkspaceExpanded: (directory, value) => setStore("workspaceExpanded", directory, value),
     showResetWorkspaceDialog: (root, directory) =>
       dialog.show(() => <DialogResetWorkspace root={root} directory={directory} />),
-    showDeleteWorkspaceDialog: (root, directory) =>
-      dialog.show(() => <DialogDeleteWorkspace root={root} directory={directory} />),
+    showRemoveFromWorkspaceDialog: (root, directory) =>
+      dialog.show(() => <DialogRemoveFromWorkspace root={root} directory={directory} />),
+    openRemoteVSCode,
+    openPullRequest: (directory) => void openPullRequest(directory),
+    copyPath,
+    canOpenRemoteVSCode,
+    canOpenPR,
     setScrollContainerRef: (el, mobile) => {
       if (!mobile) scrollContainerRef = el
     },
@@ -1903,8 +2290,13 @@ export default function LegacyLayout(props: ParentProps) {
     openSidebar: () => layout.sidebar.open(),
     closeProject,
     showEditProjectDialog: (proj) => showEditProjectDialog(server.current!, proj),
+    openRemoteVSCode,
+    openPullRequest: (directory) => void openPullRequest(directory),
+    copyPath,
+    canOpenRemoteVSCode,
+    canOpenPR,
     toggleProjectWorkspaces,
-    workspacesEnabled: (project) => project.vcs === "git" && layout.sidebar.workspaces(project.worktree)(),
+    workspacesEnabled: (project) => project.vcs === "git" || isWorkspaceRootProject(project),
     workspaceIds,
     workspaceLabel,
     sessionProps: {
@@ -1942,6 +2334,19 @@ export default function LegacyLayout(props: ParentProps) {
       if (!item) return [] as string[]
       return workspaceIds(item)
     })
+    const workspaceRows = createMemo(() => {
+      const item = project()
+      if (!item) return [] as string[]
+      return workspaces().filter((directory) => pathKey(directory) !== pathKey(item.worktree))
+    })
+    const featureProject = createMemo(() => {
+      const item = project()
+      if (isWorkspaceRootProject(item)) return true
+      const root = worktree()
+      if (!root) return false
+      const prefix = `${pathKey(root)}/`
+      return workspaces().some((directory) => pathKey(directory).startsWith(prefix))
+    })
     const unseenCount = createMemo(() =>
       workspaces().reduce((total, directory) => total + notification.project.unseenCount(directory), 0),
     )
@@ -1952,13 +2357,8 @@ export default function LegacyLayout(props: ParentProps) {
     const workspacesEnabled = createMemo(() => {
       const item = project()
       if (!item) return false
-      if (item.vcs !== "git") return false
-      return layout.sidebar.workspaces(item.worktree)()
-    })
-    const canToggle = createMemo(() => {
-      const item = project()
-      if (!item) return false
-      return item.vcs === "git" || layout.sidebar.workspaces(item.worktree)()
+      if (item.vcs !== "git" && !isWorkspaceRootProject(item)) return false
+      return true
     })
     const homedir = createMemo(() => serverSync().data.path.home)
 
@@ -2055,19 +2455,38 @@ export default function LegacyLayout(props: ParentProps) {
                           <DropdownMenu.ItemLabel>{language.t("common.edit")}</DropdownMenu.ItemLabel>
                         </DropdownMenu.Item>
                         <DropdownMenu.Item
-                          data-action="project-workspaces-toggle"
-                          data-project={slug()}
-                          disabled={!canToggle()}
-                          onSelect={() => {
-                            toggleProjectWorkspaces(project)
-                          }}
+                          disabled={!canOpenRemoteVSCode()}
+                          onSelect={() => openRemoteVSCode(project.worktree)}
                         >
                           <DropdownMenu.ItemLabel>
-                            {workspacesEnabled()
-                              ? language.t("sidebar.workspaces.disable")
-                              : language.t("sidebar.workspaces.enable")}
+                            {language.t("session.header.open.ariaLabel", {
+                              app: language.t("session.header.open.app.vscode"),
+                            })}
                           </DropdownMenu.ItemLabel>
                         </DropdownMenu.Item>
+                        <Show when={canOpenPR(project.worktree)}>
+                          <DropdownMenu.Item onSelect={() => void openPullRequest(project.worktree)}>
+                            <DropdownMenu.ItemLabel>{language.t("session.header.openPR")}</DropdownMenu.ItemLabel>
+                          </DropdownMenu.Item>
+                        </Show>
+                        <DropdownMenu.Item onSelect={() => copyPath(project.worktree)}>
+                          <DropdownMenu.ItemLabel>{language.t("session.header.open.copyPath")}</DropdownMenu.ItemLabel>
+                        </DropdownMenu.Item>
+                        <Show when={workspacesEnabled()}>
+                          <DropdownMenu.Item
+                            onSelect={() => {
+                              if (featureProject()) {
+                                void addProjectToFeature(project)
+                                return
+                              }
+                              showCreateWorkspaceDialog(project)
+                            }}
+                          >
+                            <DropdownMenu.ItemLabel>
+                              {featureProject() ? language.t("workspace.addProject") : language.t("workspace.new")}
+                            </DropdownMenu.ItemLabel>
+                          </DropdownMenu.Item>
+                        </Show>
                         <DropdownMenu.Item
                           data-action="project-clear-notifications"
                           data-project={slug()}
@@ -2108,7 +2527,7 @@ export default function LegacyLayout(props: ParentProps) {
                           onClick={() => {
                             const dir = worktree()
                             if (!dir) return
-                            navigateWithSidebarReset(`/${base64Encode(dir)}/session`)
+                            navigateToNewSession(dir)
                           }}
                         >
                           <IconV2 name="edit" size="small" />
@@ -2130,13 +2549,11 @@ export default function LegacyLayout(props: ParentProps) {
                     <div class="shrink-0 py-4">
                       <Button
                         size="large"
-                        icon="plus-small"
+                        icon="new-session"
                         class="w-full"
-                        onClick={() => {
-                          void createWorkspace(project)
-                        }}
+                        onClick={() => navigateToNewSession(project.worktree)}
                       >
-                        {language.t("workspace.new")}
+                        {language.t("command.session.new")}
                       </Button>
                     </div>
                     <div class="relative flex-1 min-h-0">
@@ -2154,8 +2571,14 @@ export default function LegacyLayout(props: ParentProps) {
                           }}
                           class="size-full flex flex-col py-2 gap-4 overflow-y-auto no-scrollbar [overflow-anchor:none]"
                         >
-                          <SortableProvider ids={workspaces()}>
-                            <For each={workspaces()}>
+                          <LocalWorkspaceSessions
+                            ctx={workspaceSidebarCtx}
+                            project={project}
+                            sortNow={sortNow}
+                            mobile={panelProps.mobile}
+                          />
+                          <SortableProvider ids={workspaceRows()}>
+                            <For each={workspaceRows()}>
                               {(directory) => (
                                 <SortableWorkspace
                                   ctx={workspaceSidebarCtx}
@@ -2246,7 +2669,13 @@ export default function LegacyLayout(props: ParentProps) {
   )
 
   return (
-    <div class="relative bg-background-base flex-1 min-h-0 min-w-0 flex flex-col select-none [&_input]:select-text [&_textarea]:select-text [&_[contenteditable]]:select-text">
+    <div
+      class="relative bg-background-base flex-1 min-h-0 min-w-0 flex flex-col select-none [&_input]:select-text [&_textarea]:select-text [&_[contenteditable]]:select-text"
+      style={{
+        "padding-top": "env(safe-area-inset-top, 0px)",
+        "padding-bottom": "env(safe-area-inset-bottom, 0px)",
+      }}
+    >
       {autoselecting() ?? ""}
       <Titlebar update={titlebarUpdate} />
       <Show when={updateVersion() !== undefined}>
@@ -2274,7 +2703,7 @@ export default function LegacyLayout(props: ParentProps) {
                 aim.reset()
                 if (!sidebarHovering()) return
 
-                arm()
+                arm(800)
               }}
             >
               <div class="@container w-full h-full contain-strict">{sidebarContent()}</div>

@@ -320,6 +320,7 @@ export const dict = {
   "mcp.status.connected": "connected",
   "mcp.status.failed": "failed",
   "mcp.status.needs_auth": "needs auth",
+  "mcp.status.needs_client_registration": "needs client registration",
   "mcp.status.disabled": "disabled",
   "mcp.auth.clickToAuthenticate": "Click to authenticate",
 
@@ -728,6 +729,12 @@ export const dict = {
   "session.header.open.app.androidStudio": "Android Studio",
   "session.header.open.app.powershell": "PowerShell",
   "session.header.open.app.sublimeText": "Sublime Text",
+  "session.header.openPR": "Open pull request",
+  "session.header.openPR.prompt":
+    "Create a pull request for the current branch. Review the changes, summarize the work clearly, and use the repository's PR workflow.",
+  "session.header.openPR.dialog.title": "No open pull request",
+  "session.header.openPR.dialog.description": "No existing pull request was found for this branch.",
+  "session.header.openPR.dialog.create": "Create with OpenCode",
 
   "status.popover.trigger": "Status",
   "status.popover.ariaLabel": "Server configurations",
@@ -1074,9 +1081,21 @@ export const dict = {
   "session.delete.button": "Delete session",
 
   "workspace.new": "New workspace",
+  "workspace.addProject": "Add project",
   "workspace.type.local": "local",
   "workspace.type.sandbox": "sandbox",
+  "workspace.create.title": "Create workspace",
+  "workspace.create.name": "Workspace name",
+  "workspace.create.name.placeholder": "Workspace name",
+  "workspace.create.button": "Create workspace",
   "workspace.create.failed.title": "Failed to create workspace",
+  "workspace.removeFromWorkspace.failed.title": "Failed to remove from workspace",
+  "workspace.removeFromWorkspace.menu": "Remove from workspace",
+  "workspace.removeFromWorkspace.title": "Remove from workspace",
+  "workspace.removeFromWorkspace.confirm": 'Remove "{{name}}" from this workspace?',
+  "workspace.removeFromWorkspace.description":
+    "This removes the project from the workspace without deleting the project files.",
+  "workspace.removeFromWorkspace.button": "Remove from workspace",
   "workspace.delete.failed.title": "Failed to delete workspace",
   "workspace.resetting.title": "Resetting workspace",
   "workspace.resetting.description": "This may take a minute.",

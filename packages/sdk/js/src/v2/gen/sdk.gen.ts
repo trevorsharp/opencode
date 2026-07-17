@@ -140,6 +140,8 @@ import type {
   ProjectInitGitResponses,
   ProjectListErrors,
   ProjectListResponses,
+  ProjectOpenPullRequestErrors,
+  ProjectOpenPullRequestResponses,
   ProjectUpdateErrors,
   ProjectUpdateResponses,
   PromptInput,
@@ -177,6 +179,8 @@ import type {
   QuestionV2Reply,
   SessionAbortErrors,
   SessionAbortResponses,
+  SessionAgentCardErrors,
+  SessionAgentCardResponses,
   SessionChildrenErrors,
   SessionChildrenResponses,
   SessionCommandErrors,
@@ -2619,6 +2623,40 @@ export class Project extends HeyApiClient {
   }
 
   /**
+   * Find open pull request
+   *
+   * Find an existing pull request for the current branch using the configured pr script.
+   */
+  public openPullRequest<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ProjectOpenPullRequestResponses,
+      ProjectOpenPullRequestErrors,
+      ThrowOnError
+    >({
+      url: "/project/pr/open",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
    * Update project
    *
    * Update project properties such as name, icon, and commands.
@@ -4323,6 +4361,69 @@ export class Session2 extends HeyApiClient {
       url: "/session/{sessionID}/unrevert",
       ...options,
       ...params,
+    })
+  }
+
+  /**
+   * Upsert subagent card
+   *
+   * Create or update an inline task card linking to a child session, without triggering an LLM turn. Lets orchestrators (e.g. workflow plugins) surface programmatically-spawned subagents in the parent conversation. Omit messageID/partID to create the card; pass the returned ids to update its status.
+   */
+  public agentCard<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      childSessionID?: string
+      description?: string
+      agent?: string
+      model?: string
+      prompt?: string
+      status?: "pending" | "running" | "completed" | "error"
+      output?: string
+      error?: string
+      tool?: string
+      metadata?: {
+        [key: string]: unknown
+      }
+      messageID?: string
+      partID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "childSessionID" },
+            { in: "body", key: "description" },
+            { in: "body", key: "agent" },
+            { in: "body", key: "model" },
+            { in: "body", key: "prompt" },
+            { in: "body", key: "status" },
+            { in: "body", key: "output" },
+            { in: "body", key: "error" },
+            { in: "body", key: "tool" },
+            { in: "body", key: "metadata" },
+            { in: "body", key: "messageID" },
+            { in: "body", key: "partID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionAgentCardResponses, SessionAgentCardErrors, ThrowOnError>({
+      url: "/session/{sessionID}/agent-card",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 }

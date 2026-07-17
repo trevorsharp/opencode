@@ -11,8 +11,8 @@ import {
 } from "./settings"
 
 describe("layout transition", () => {
-  test("blank profiles default to the new layout", () => {
-    expect(newLayoutDesignsDefault).toBe(true)
+  test("blank profiles default to the legacy layout", () => {
+    expect(newLayoutDesignsDefault).toBe(false)
   })
 
   test("hides the transition until a sunset is scheduled", () => {
@@ -41,13 +41,13 @@ describe("layout transition", () => {
     expect(nextSunsetCheckDelay(9_000, 10_000)).toBe(0)
   })
 
-  test("enables the new layout when upgrading from 1.17.19 or earlier", () => {
-    expect(shouldEnableNewLayout("v1.17.19", "1.17.20")).toBe(true)
-    expect(shouldEnableNewLayout("1.16.9", "2.0.0")).toBe(true)
+  test("keeps the legacy layout when upgrading from 1.17.19 or earlier", () => {
+    expect(shouldEnableNewLayout("v1.17.19", "1.17.20")).toBe(false)
+    expect(shouldEnableNewLayout("1.16.9", "2.0.0")).toBe(false)
   })
 
-  test("enables the new layout when no previous version was recorded", () => {
-    expect(shouldEnableNewLayout(undefined, "1.17.20")).toBe(true)
+  test("keeps the legacy layout when no previous version was recorded", () => {
+    expect(shouldEnableNewLayout(undefined, "1.17.20")).toBe(false)
   })
 
   test("detects upgrades only when a previous version is older", () => {

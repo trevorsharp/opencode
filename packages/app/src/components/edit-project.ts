@@ -7,12 +7,21 @@ import { useGlobal } from "@/context/global"
 import { type LocalProject } from "@/context/layout"
 import { ServerConnection } from "@/context/server"
 
-export function createEditProjectModel(props: { project: LocalProject; server: ServerConnection.Any }) {
+export function createEditProjectModel(props: {
+  project: LocalProject
+  server: ServerConnection.Any
+  nameOnly?: boolean
+}) {
   const dialog = useDialog()
   const global = useGlobal()
   const serverCtx = createMemo(() => global.ensureServerCtx(props.server))
   const folderName = createMemo(() => getFilename(props.project.worktree))
   const defaultName = createMemo(() => props.project.name || folderName())
+  const isWorkspaceRoot = createMemo(() => {
+    if (props.project.id?.startsWith("feature:")) return true
+    const root = `${props.project.worktree.replace(/\/+$/, "")}/`
+    return props.project.sandboxes?.some((directory) => directory.startsWith(root)) ?? false
+  })
   const [store, setStore] = createStore({
     name: defaultName(),
     color: props.project.icon?.color,
@@ -67,25 +76,34 @@ export function createEditProjectModel(props: { project: LocalProject; server: S
   const save = useMutation(() => ({
     mutationFn: async () => {
       const name = store.name.trim() === folderName() ? "" : store.name.trim()
+      const nextName = isWorkspaceRoot() ? store.name.trim() : name
       const start = store.startup.trim()
 
       if (props.project.id && props.project.id !== "global") {
         await serverCtx().sdk.client.project.update({
           projectID: props.project.id,
           directory: props.project.worktree,
-          name,
-          icon: { color: store.color || "", override: store.iconOverride || "" },
-          commands: { start },
+          name: nextName,
+          ...(props.nameOnly
+            ? {}
+            : {
+                icon: { color: store.color || "", override: store.iconOverride || "" },
+                commands: { start },
+              }),
         })
-        serverCtx().sync.project.icon(props.project.worktree, store.iconOverride || undefined)
+        if (!props.nameOnly) serverCtx().sync.project.icon(props.project.worktree, store.iconOverride || undefined)
         dialog.close()
         return
       }
 
       serverCtx().sync.project.meta(props.project.worktree, {
-        name,
-        icon: { color: store.color || undefined, override: store.iconOverride || undefined },
-        commands: { start: start || undefined },
+        name: nextName,
+        ...(props.nameOnly
+          ? {}
+          : {
+              icon: { color: store.color || undefined, override: store.iconOverride || undefined },
+              commands: { start: start || undefined },
+            }),
       })
       dialog.close()
     },
