@@ -158,6 +158,53 @@ describe("Project.fromDirectory", () => {
     }),
   )
 
+  it.live("only treats the workspace root as a feature project", () =>
+    Effect.gen(function* () {
+      const root = yield* tmpdirScoped()
+      const member = path.join(root, "member")
+      yield* Effect.promise(() => Bun.write(path.join(root, ".workspace"), "Feature"))
+      yield* Effect.promise(() => $`mkdir -p ${member}`.quiet())
+      yield* Effect.promise(() => $`git init`.cwd(member).quiet())
+      yield* Effect.promise(() => $`git config user.name "Test"`.cwd(member).quiet())
+      yield* Effect.promise(() => $`git config user.email "test@opencode.test"`.cwd(member).quiet())
+      yield* Effect.promise(() => $`git config commit.gpgsign false`.cwd(member).quiet())
+      yield* Effect.promise(() => $`git commit --allow-empty -m "root"`.cwd(member).quiet())
+
+      const projects = yield* Project.Service
+      const memberProject = yield* projects.fromDirectory(member)
+      const featureProject = yield* projects.fromDirectory(root)
+
+      expect(memberProject.project.id).not.toBe(ProjectV2.ID.make(`feature:${root}`))
+      expect(memberProject.project.worktree).toBe(member)
+      expect(featureProject.project.id).toBe(ProjectV2.ID.make(`feature:${root}`))
+      expect(featureProject.project.worktree).toBe(root)
+
+      const sessionID = crypto.randomUUID() as SessionID
+      yield* Database.Service.use(({ db }) =>
+        db
+          .insert(SessionTable)
+          .values({
+            id: sessionID,
+            project_id: featureProject.project.id,
+            slug: sessionID,
+            directory: member,
+            title: "misassigned member session",
+            version: "0.0.0-test",
+            time_created: Date.now(),
+            time_updated: Date.now(),
+          })
+          .run()
+          .pipe(Effect.orDie),
+      )
+
+      yield* projects.fromDirectory(member)
+      const session = yield* Database.Service.use(({ db }) =>
+        db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie),
+      )
+      expect(session?.project_id).toBe(memberProject.project.id)
+    }),
+  )
+
   it.live("prefers normalized origin remote over root commit", () =>
     Effect.gen(function* () {
       const project = yield* Project.Service

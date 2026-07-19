@@ -1,5 +1,6 @@
+import path from "node:path"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { and, eq, sql } from "drizzle-orm"
+import { and, eq, like, sql } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectDirectoryTable, ProjectTable } from "@opencode-ai/core/project/sql"
 import { ProjectDirectories } from "@opencode-ai/core/project/directories"
@@ -210,10 +211,27 @@ const layer = Layer.effect(
         )
     })
 
+    const workspaceRoot = Effect.fnUntraced(function* (directory: string) {
+      const root = FSUtil.resolve(directory)
+      const name = yield* fs
+        .readFileString(path.join(root, ".workspace"))
+        .pipe(Effect.catch(() => Effect.succeed(undefined)))
+      if (name === undefined) return undefined
+      return {
+        id: ProjectV2.ID.make(`feature:${root}`),
+        worktree: root,
+        name: name.trim() || undefined,
+      }
+    })
+
     const fromDirectory = Effect.fn("Project.fromDirectory")(function* (directory: string) {
       yield* Effect.logInfo("fromDirectory", { directory })
 
-      const data = yield* projectV2.resolve(AbsolutePath.make(directory))
+      const resolved = yield* projectV2.resolve(AbsolutePath.make(directory))
+      const feature = yield* workspaceRoot(directory)
+      const data = feature
+        ? { ...resolved, id: feature.id, directory: feature.worktree, vcs: undefined, previous: resolved.id }
+        : resolved
       const worktree = data.id === ProjectV2.ID.make("global") && !data.vcs ? "/" : data.directory
 
       // Phase 2: upsert
@@ -236,6 +254,7 @@ const layer = Layer.effect(
         ...existing,
         worktree: projectID === ProjectV2.ID.global ? worktree : existing.worktree,
         vcs: data.vcs?.type ?? fakeVcs,
+        name: feature?.name ?? existing.name,
         time: { ...existing.time, updated: Date.now() },
       }
       if (
@@ -289,6 +308,14 @@ const layer = Layer.effect(
         .pipe(Effect.orDie)
 
       if (projectID !== ProjectV2.ID.global) {
+        if (!feature) {
+          yield* db
+            .update(SessionTable)
+            .set({ project_id: projectID, time_updated: sql`${SessionTable.time_updated}` })
+            .where(and(like(SessionTable.project_id, "feature:%"), eq(SessionTable.directory, data.directory)))
+            .run()
+            .pipe(Effect.orDie)
+        }
         yield* db
           .update(SessionTable)
           .set({ project_id: projectID })

@@ -1,3 +1,10 @@
+## OpenCode Fork
+
+- This repository is a fork of upstream opencode. Keep fork-specific changes small, intentional, and easy to rebase onto `origin/dev`.
+- When asked to rebuild the package or build, run `./packages/opencode/script/build.ts --single` from the repository root.
+
+## Remaining AGENTS.md
+
 - To regenerate the legacy JavaScript SDK, run `./packages/sdk/js/script/build.ts`.
 - After changing the public Protocol or Server `HttpApi`, run `bun run generate` from `packages/client`. Do not edit `src/generated` or `src/generated-effect` directly.
 - Keep runtime dependencies directed from Schema to Core and Protocol, then from Core and Protocol to Server. Client runtime code may depend on Schema and Protocol but never Core or Server; `sdk-next` composes Client, Core, and Server.

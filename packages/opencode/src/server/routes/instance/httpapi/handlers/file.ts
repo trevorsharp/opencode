@@ -4,8 +4,10 @@ import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/l
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Location } from "@opencode-ai/core/location"
+import { Protected } from "@opencode-ai/core/filesystem/protected"
 import { AbsolutePath, RelativePath } from "@opencode-ai/core/schema"
 import { Effect, Layer, Option } from "effect"
+import fuzzysort from "fuzzysort"
 import ignore from "ignore"
 import path from "path"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -22,6 +24,37 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
           locations.get(Location.Ref.make({ directory: AbsolutePath.make((yield* InstanceState.context).directory) })),
         ),
       )
+    })
+
+    const defaultDirectoryResults = Effect.fn("FileHttpApi.defaultDirectoryResults")(function* (
+      query: string,
+      limit: number,
+    ) {
+      const fs = yield* FileSystem.Service
+      const protectedNames = Protected.names()
+      const nested = new Set(["node_modules", "dist", "build", "target", "vendor"])
+      const top = (yield* fs.list({ path: RelativePath.make("") }).pipe(Effect.catch(() => Effect.succeed([]))))
+        .filter((item) => item.type === "directory")
+        .filter((item) => !path.basename(item.path).startsWith("."))
+        .filter((item) => !protectedNames.has(path.basename(item.path)))
+      const children = (yield* Effect.forEach(
+        top,
+        (item) =>
+          fs.list({ path: item.path }).pipe(
+            Effect.catch(() => Effect.succeed([])),
+            Effect.map((items) =>
+              items
+                .filter((child) => child.type === "directory")
+                .filter((child) => !path.basename(child.path).startsWith("."))
+                .filter((child) => !nested.has(path.basename(child.path)))
+                .map((child) => child.path),
+            ),
+          ),
+        { concurrency: 16 },
+      )).flat()
+      const rows = Array.from(new Set([...top.map((item) => item.path), ...children]))
+      if (!query) return rows.slice(0, limit)
+      return fuzzysort.go(query, rows, { limit }).map((item) => item.target)
     })
 
     const findText = Effect.fn("FileHttpApi.findText")(function* (ctx: { query: { pattern: string } }) {
@@ -46,17 +79,30 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
       const directory = (yield* InstanceState.context).directory
       const limit = ctx.query.limit ?? 10
       const type = ctx.query.type ?? (ctx.query.dirs === "false" ? "file" : undefined)
+      const query = ctx.query.query.trim()
+      const useDefaultDirectories = type === "directory" || (!query && type === undefined)
       const started = performance.now()
-      const found = yield* filesystem(FileSystem.Service.use((fs) => fs.find({ query: ctx.query.query, limit, type })))
+      const found = yield* filesystem(FileSystem.Service.use((fs) => fs.find({ query, limit, type }))).pipe(
+        Effect.catch((error) => {
+          if (!useDefaultDirectories) return Effect.die(error)
+          return Effect.logWarning("find file failed", { directory, query, type, error }).pipe(
+            Effect.andThen(Effect.succeed<{ path: string }[]>([])),
+          )
+        }),
+      )
+      const fallback =
+        useDefaultDirectories && found.length === 0 ? yield* filesystem(defaultDirectoryResults(query, limit)) : []
+      const results = fallback.length ? fallback : found.map((item) => item.path)
       yield* Effect.logInfo("find file", {
+        engine: fallback.length ? "directory-list" : "fff",
         query: ctx.query.query,
         type,
         directory,
         limit,
-        results: found.length,
+        results: results.length,
         duration: Math.round(performance.now() - started),
       })
-      return found.map((item) => item.path)
+      return results
     })
 
     const findSymbol = Effect.fn("FileHttpApi.findSymbol")(function* () {

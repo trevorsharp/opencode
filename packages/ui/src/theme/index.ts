@@ -72,6 +72,7 @@ export {
   solarizedTheme,
   synthwave84Theme,
   tokyonightTheme,
+  trsTheme,
   vercelTheme,
   vesperTheme,
   zenburnTheme,

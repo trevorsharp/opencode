@@ -47,3 +47,9 @@
   object-fit: cover;
   border-radius: inherit;
 }
+
+html[data-theme="trs"] [data-component="avatar"] {
+  filter: grayscale(100%);
+  --avatar-fg: var(--text-strong);
+  color: var(--text-strong);
+}

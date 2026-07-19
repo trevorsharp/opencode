@@ -1,20 +1,25 @@
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { Dialog } from "@opencode-ai/ui/dialog"
+import { Button } from "@opencode-ai/ui/button"
 import { FileIcon } from "@opencode-ai/ui/file-icon"
 import { List } from "@opencode-ai/ui/list"
+import { TextField } from "@opencode-ai/ui/text-field"
 import type { ListRef } from "@opencode-ai/ui/list"
 import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
-import { createMemo, createResource, createSignal } from "solid-js"
+import { createMemo, createResource, createSignal, Show } from "solid-js"
+import { createStore } from "solid-js/store"
 import { useLanguage } from "@/context/language"
 import { ServerConnection } from "@/context/server"
 import { useGlobal } from "@/context/global"
 import { cleanPickerInput, createDirectorySearch, displayPickerPath } from "./directory-picker-domain"
+import "./dialog-select-directory.css"
 
 interface DialogSelectDirectoryProps {
   title?: string
   multiple?: boolean
   onSelect: (result: string | string[] | null) => void
   server: ServerConnection.Any
+  onCreateWorkspace?: (name: string) => Promise<string | undefined>
 }
 
 type Row = {
@@ -54,6 +59,7 @@ export function DialogSelectDirectory(props: DialogSelectDirectoryProps) {
   const language = useLanguage()
 
   const [filter, setFilter] = createSignal("")
+  const [workspace, setWorkspace] = createStore({ creating: false, name: "", busy: false })
   let list: ListRef | undefined
 
   const missingBase = createMemo(() => !(sync.data.path.home || sync.data.path.directory))
@@ -122,7 +128,48 @@ export function DialogSelectDirectory(props: DialogSelectDirectoryProps) {
     dialog.close()
   }
 
-  return (
+  async function createWorkspace(event: SubmitEvent) {
+    event.preventDefault()
+    if (workspace.busy) return
+    const name = workspace.name.trim()
+    if (!name) return
+    setWorkspace("busy", true)
+    const directory = await props.onCreateWorkspace?.(name)
+    if (!directory) {
+      setWorkspace("busy", false)
+      return
+    }
+    resolve(directory)
+  }
+
+  const workspaceDialog = () => (
+    <Dialog title={language.t("workspace.create.title")} class="workspace-create-dialog" fit>
+      <form onSubmit={(event) => void createWorkspace(event)} class="flex flex-col gap-4 px-6 pb-5">
+        <TextField
+          autofocus
+          placeholder={language.t("workspace.create.name.placeholder")}
+          value={workspace.name}
+          onChange={(value) => setWorkspace("name", value)}
+        />
+        <div class="flex justify-end gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="large"
+            disabled={workspace.busy}
+            onClick={() => setWorkspace("creating", false)}
+          >
+            {language.t("common.cancel")}
+          </Button>
+          <Button type="submit" variant="primary" size="large" disabled={workspace.busy || !workspace.name.trim()}>
+            {language.t("workspace.create.button")}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  )
+
+  const directoryDialog = () => (
     <Dialog title={props.title ?? language.t("command.project.open")}>
       <List
         class="px-3"
@@ -189,6 +236,19 @@ export function DialogSelectDirectory(props: DialogSelectDirectoryProps) {
           )
         }}
       </List>
+      {props.onCreateWorkspace && (
+        <div class="flex justify-end px-3 pb-3">
+          <Button variant="ghost" size="large" onClick={() => setWorkspace("creating", true)}>
+            Create New Workspace
+          </Button>
+        </div>
+      )}
     </Dialog>
+  )
+
+  return (
+    <Show when={workspace.creating} fallback={directoryDialog()}>
+      {workspaceDialog()}
+    </Show>
   )
 }

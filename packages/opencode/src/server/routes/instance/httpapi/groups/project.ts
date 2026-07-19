@@ -14,6 +14,27 @@ const UpdatePayload = Schema.Struct({
   icon: Schema.optional(Project.Info.fields.icon),
   commands: Schema.optional(Project.Info.fields.commands),
 })
+export const ProjectPullRequestResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("found"),
+    url: Schema.String,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("missing"),
+  }),
+])
+export class ProjectPullRequestError extends Schema.ErrorClass<ProjectPullRequestError>("ProjectPullRequestError")(
+  {
+    message: Schema.String,
+  },
+  { httpApiStatus: 400 },
+) {}
+export class ProjectRenameError extends Schema.ErrorClass<ProjectRenameError>("ProjectRenameError")(
+  {
+    message: Schema.String,
+  },
+  { httpApiStatus: 400 },
+) {}
 
 export const ProjectApi = HttpApi.make("project")
   .add(
@@ -49,12 +70,23 @@ export const ProjectApi = HttpApi.make("project")
             description: "Create a git repository for the current project and return the refreshed project info.",
           }),
         ),
+        HttpApiEndpoint.post("openPullRequest", `${root}/pr/open`, {
+          query: WorkspaceRoutingQuery,
+          success: described(ProjectPullRequestResult, "Open pull request lookup result"),
+          error: [ProjectPullRequestError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "project.open_pull_request",
+            summary: "Find open pull request",
+            description: "Find an existing pull request for the current branch using the configured pr script.",
+          }),
+        ),
         HttpApiEndpoint.patch("update", `${root}/:projectID`, {
           params: { projectID: ProjectV2.ID },
           query: WorkspaceRoutingQuery,
           payload: UpdatePayload,
           success: described(Project.Info, "Updated project information"),
-          error: [HttpApiError.BadRequest, ProjectNotFoundError],
+          error: [HttpApiError.BadRequest, ProjectNotFoundError, ProjectRenameError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "project.update",

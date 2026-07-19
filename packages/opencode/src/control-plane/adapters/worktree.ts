@@ -32,31 +32,19 @@ export const WorktreeAdapter: WorkspaceAdapter = {
     const { AppRuntime, Worktree } = await loadWorktree()
     const next = await AppRuntime.runPromise(
       provideContext(
-        Worktree.Service.use((svc) => svc.makeWorktreeInfo({ detached: true })),
+        Worktree.Service.use((svc) => svc.create({ name: info.branch ?? info.name })),
         context,
       ),
     )
     return {
       ...info,
       name: next.name,
+      branch: next.branch ?? null,
       directory: next.directory,
     }
   },
-  async create(info, _env, _from, context) {
-    const { AppRuntime, Worktree } = await loadWorktree()
-    const config = decodeWorktreeConfig(info)
-    await AppRuntime.runPromise(
-      provideContext(
-        Worktree.Service.use((svc) =>
-          svc.createFromInfo({
-            name: config.name,
-            directory: config.directory,
-            ...(config.branch ? { branch: config.branch } : {}),
-          }),
-        ),
-        context,
-      ),
-    )
+  async create(info) {
+    decodeWorktreeConfig(info)
   },
   async list(context) {
     const { AppRuntime, Worktree } = await loadWorktree()

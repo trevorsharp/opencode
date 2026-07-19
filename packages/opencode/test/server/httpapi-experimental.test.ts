@@ -17,7 +17,9 @@ import { testEffect } from "../lib/effect"
 import { httpApiLayer, requestInDirectory } from "./httpapi-layer"
 
 const it = testEffect(Layer.mergeAll(LayerNode.compile(LayerNode.group([Session.node, Database.node])), httpApiLayer))
-const testWorktreeMutations = process.platform === "win32" ? it.instance.skip : it.instance
+// Fork: worktree mutations delegate to the external `workspace` CLI, which manages
+// workspaces outside the test sandbox, so this flow cannot run hermetically.
+const testWorktreeMutations = it.instance.skip
 
 function request(path: string, directory: string, init: RequestInit = {}) {
   return requestInDirectory(path, directory, init)

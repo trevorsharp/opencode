@@ -40,6 +40,33 @@ type MessagePage = {
   complete: boolean
 }
 
+function activeBackgroundSessionOwners(
+  info: Record<string, Session | undefined>,
+  statuses: Record<string, SessionStatus | undefined>,
+) {
+  const owners = new Set<string>()
+  for (const [activeID, status] of Object.entries(statuses)) {
+    if (!status || status.type === "idle") continue
+    const visited = new Set<string>()
+    let current = info[activeID]
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id)
+      const owner = current.metadata?.parentSessionId
+      if (current.metadata?.background === true && typeof owner === "string") owners.add(owner)
+      current = current.parentID ? info[current.parentID] : undefined
+    }
+  }
+  return owners
+}
+
+export function sessionHasActiveBackgroundDescendant(
+  sessionID: string,
+  info: Record<string, Session | undefined>,
+  statuses: Record<string, SessionStatus | undefined>,
+) {
+  return activeBackgroundSessionOwners(info, statuses).has(sessionID)
+}
+
 // Most markers describe the current HTTP attempt; deltaParts persists non-durable stream state across retries.
 type MessageLoadState = {
   touchedMessages: Set<string>
@@ -139,6 +166,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
   const [data, setData] = createStore({
     info: {} as Record<string, Session | undefined>,
     session_status: {} as Record<string, SessionStatus>,
+    background_working: {} as Record<string, true | undefined>,
     session_diff: {} as Record<string, SnapshotFileDiff[]>,
     todo: {} as Record<string, Todo[]>,
     permission: {} as Record<string, PermissionRequest[]>,
@@ -149,7 +177,27 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
     session_working(id: string) {
       return (this.session_status[id]?.type ?? "idle") !== "idle"
     },
+    session_background_working(id: string) {
+      return this.background_working[id] ?? false
+    },
   })
+  const syncBackgroundWorking = () => {
+    const owners = activeBackgroundSessionOwners(data.info, data.session_status)
+    setData(
+      "background_working",
+      produce((draft) => {
+        for (const sessionID of Object.keys(draft)) {
+          if (!owners.has(sessionID)) delete draft[sessionID]
+        }
+        for (const sessionID of owners) draft[sessionID] = true
+      }),
+    )
+  }
+  const set = ((...input: unknown[]) => {
+    const result = (setData as (...args: unknown[]) => unknown)(...input)
+    if (input[0] === "info" || input[0] === "session_status") syncBackgroundWorking()
+    return result
+  }) as typeof setData
   const requests = new Map<string, Promise<Session>>()
   const inflight = new Map<string, Promise<void>>()
   const inflightDiff = new Map<string, Promise<void>>()
@@ -191,6 +239,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
 
   const remember = (session: Session) => {
     setData("info", session.id, reconcile(session))
+    syncBackgroundWorking()
     infoSeen.delete(session.id)
     infoSeen.add(session.id)
     if (infoSeen.size > sessionInfoLimit) {
@@ -429,6 +478,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
         dropSessionCaches(draft, sessionIDs)
       }),
     )
+    syncBackgroundWorking()
     setMeta(
       produce((draft) => {
         for (const sessionID of sessionIDs) {
@@ -781,6 +831,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
       case "session.status": {
         const props = event.properties as { sessionID: string; status: SessionStatus }
         setData("session_status", props.sessionID, reconcile(props.status))
+        syncBackgroundWorking()
         return
       }
       case "message.updated": {
@@ -1047,7 +1098,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
 
   return {
     data,
-    set: setData,
+    set,
     get: (sessionID: string) => data.info[sessionID],
     peek: (sessionID: string) => data.info[sessionID],
     remember,

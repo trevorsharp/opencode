@@ -18,6 +18,7 @@ import {
   homeProjectDirectories,
   homeSessionServerStatus,
   latestRootSession,
+  openInVSCodeURL,
   toggleHomeProjectSelection,
 } from "./helpers"
 import { pathKey } from "@/utils/path-key"
@@ -311,6 +312,18 @@ describe("layout workspace helpers", () => {
       tint: "red",
     })
     expect(reads).toBe(1)
+  })
+
+  test("builds the default VS Code remote URL", () => {
+    expect(openInVSCodeURL("vscode://vscode-remote/ssh-remote+code-server", "/home/sharp/my project")).toBe(
+      "vscode://vscode-remote/ssh-remote+code-server/home/sharp/my%20project?windowId=_blank",
+    )
+  })
+
+  test("builds a browser URL with the project folder", () => {
+    expect(openInVSCodeURL("https://trs.dev/?folder=", "/home/sharp/projects")).toBe(
+      "https://trs.dev/?folder=%2Fhome%2Fsharp%2Fprojects",
+    )
   })
 
   test("extracts api error message and fallback", () => {

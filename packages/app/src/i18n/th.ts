@@ -1,4 +1,7 @@
+import { fallbackI18n } from "./fallback"
+
 export const dict = {
+  ...fallbackI18n,
   "command.category.suggested": "แนะนำ",
   "command.category.view": "มุมมอง",
   "command.category.project": "โปรเจกต์",

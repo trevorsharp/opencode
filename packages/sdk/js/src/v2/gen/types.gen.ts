@@ -480,6 +480,9 @@ export type ToolStatePending = {
     [key: string]: unknown
   }
   raw: string
+  metadata?: {
+    [key: string]: unknown
+  }
 }
 
 export type ToolStateRunning = {
@@ -2146,6 +2149,13 @@ export type ToolList = Array<ToolListItem>
 
 export type ToolIds = Array<string>
 
+export type Worktree = {
+  name: string
+  branch?: string
+  description?: string
+  directory: string
+}
+
 export type WorktreeError = {
   name:
     | "WorktreeNotGitError"
@@ -2154,6 +2164,7 @@ export type WorktreeError = {
     | "WorktreeStartCommandFailedError"
     | "WorktreeRemoveFailedError"
     | "WorktreeResetFailedError"
+    | "WorktreeRenameFailedError"
     | "WorktreeListFailedError"
   data: {
     message: string
@@ -2166,16 +2177,18 @@ export type WorktreeCreateInput = {
    * Additional startup script to run after the project's start command
    */
   startCommand?: string
-}
-
-export type Worktree = {
-  name: string
-  branch?: string
-  directory: string
+  workspaceOnly?: boolean
 }
 
 export type WorktreeRemoveInput = {
   directory: string
+  workspaceOnly?: boolean
+}
+
+export type WorktreeRemoveResult = {
+  removed: boolean
+  featureRemoved: boolean
+  featureDirectory?: string
 }
 
 export type WorktreeResetInput = {
@@ -2426,6 +2439,14 @@ export type Project = {
   commands?: ProjectCommands
   time: ProjectTime
   sandboxes: Array<string>
+}
+
+export type ProjectPullRequestError = {
+  message: string
+}
+
+export type ProjectRenameError = {
+  message: string
 }
 
 export type ProjectNotFoundError = {
@@ -7699,7 +7720,7 @@ export type WorktreeRemoveResponses = {
   /**
    * Worktree removed
    */
-  200: boolean
+  200: WorktreeRemoveResult
 }
 
 export type WorktreeRemoveResponse = WorktreeRemoveResponses[keyof WorktreeRemoveResponses]
@@ -7727,7 +7748,7 @@ export type WorktreeListResponses = {
   /**
    * List of worktree directories
    */
-  200: Array<string>
+  200: Array<Worktree>
 }
 
 export type WorktreeListResponse = WorktreeListResponses[keyof WorktreeListResponses]
@@ -8782,6 +8803,41 @@ export type ProjectInitGitResponses = {
 
 export type ProjectInitGitResponse = ProjectInitGitResponses[keyof ProjectInitGitResponses]
 
+export type ProjectOpenPullRequestData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/project/pr/open"
+}
+
+export type ProjectOpenPullRequestErrors = {
+  /**
+   * ProjectPullRequestError | InvalidRequestError
+   */
+  400: ProjectPullRequestError | InvalidRequestError
+}
+
+export type ProjectOpenPullRequestError = ProjectOpenPullRequestErrors[keyof ProjectOpenPullRequestErrors]
+
+export type ProjectOpenPullRequestResponses = {
+  /**
+   * Open pull request lookup result
+   */
+  200:
+    | {
+        status: "found"
+        url: string
+      }
+    | {
+        status: "missing"
+      }
+}
+
+export type ProjectOpenPullRequestResponse = ProjectOpenPullRequestResponses[keyof ProjectOpenPullRequestResponses]
+
 export type ProjectUpdateData = {
   body?: {
     name?: string
@@ -8800,9 +8856,9 @@ export type ProjectUpdateData = {
 
 export type ProjectUpdateErrors = {
   /**
-   * BadRequest | InvalidRequestError
+   * BadRequest | ProjectRenameError | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: EffectHttpApiErrorBadRequest | ProjectRenameError | InvalidRequestError
   /**
    * ProjectNotFoundError
    */
@@ -10471,6 +10527,58 @@ export type PartUpdateResponses = {
 }
 
 export type PartUpdateResponse = PartUpdateResponses[keyof PartUpdateResponses]
+
+export type SessionAgentCardData = {
+  body?: {
+    childSessionID?: string
+    description: string
+    agent?: string
+    model?: string
+    prompt?: string
+    status: "pending" | "running" | "completed" | "error"
+    output?: string
+    error?: string
+    tool?: string
+    metadata?: {
+      [key: string]: unknown
+    }
+    messageID?: string
+    partID?: string
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/agent-card"
+}
+
+export type SessionAgentCardErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionAgentCardError = SessionAgentCardErrors[keyof SessionAgentCardErrors]
+
+export type SessionAgentCardResponses = {
+  /**
+   * Successfully upserted agent card
+   */
+  200: {
+    messageID: string
+    partID: string
+  }
+}
+
+export type SessionAgentCardResponse = SessionAgentCardResponses[keyof SessionAgentCardResponses]
 
 export type SyncStartData = {
   body?: never

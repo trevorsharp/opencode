@@ -234,6 +234,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const current = () => {
       const item = firstModel(
         () => scope()?.model,
+        models.default,
         () => agent.current()?.model,
         fallback,
       )

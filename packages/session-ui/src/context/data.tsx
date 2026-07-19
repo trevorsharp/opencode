@@ -39,6 +39,13 @@ type Data = {
 
 export type NavigateToSessionFn = (sessionID: string) => void
 
+export type WorkflowCancelFn = (input: {
+  sessionID: string
+  messageID: string
+  partID: string
+  metadataKey?: "workflow" | "schedule"
+}) => void
+
 export type SessionHrefFn = (sessionID: string) => string
 
 export const { use: useData, provider: DataProvider } = createSimpleContext({
@@ -48,6 +55,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
     directory: string
     onNavigateToSession?: NavigateToSessionFn
     onSessionHref?: SessionHrefFn
+    onWorkflowCancel?: WorkflowCancelFn
   }) => {
     return {
       get store() {
@@ -58,6 +66,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
       },
       navigateToSession: props.onNavigateToSession,
       sessionHref: props.onSessionHref,
+      workflowCancel: props.onWorkflowCancel,
     }
   },
 })

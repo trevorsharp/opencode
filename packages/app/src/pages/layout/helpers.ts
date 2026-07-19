@@ -148,3 +148,13 @@ export const effectiveWorkspaceOrder = (local: string, dirs: string[], persisted
 
   return [...result, ...live.values()]
 }
+
+export function openInVSCodeURL(base: string, directory: string) {
+  if (!base.startsWith("http://") && !base.startsWith("https://")) {
+    return `${base}${encodeURI(directory)}?windowId=_blank`
+  }
+
+  const url = new URL(base)
+  url.searchParams.set("folder", directory)
+  return url.toString()
+}
