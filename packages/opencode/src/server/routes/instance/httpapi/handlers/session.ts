@@ -26,6 +26,7 @@ import {
   AgentCardPayload,
   CommandPayload,
   DiffQuery,
+  ExternalTranscriptPayload,
   ForkPayload,
   InitPayload,
   ListQuery,
@@ -522,6 +523,98 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return { messageID: message.id, partID: part.id }
     })
 
+    const externalTranscript = Effect.fn("SessionHttpApi.externalTranscript")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof ExternalTranscriptPayload.Type
+    }) {
+      const { sessionID } = ctx.params
+      const payload = ctx.payload
+      yield* requireSession(sessionID)
+      const now = Date.now()
+      const metadata = {
+        external: true,
+        ...(payload.claudeSessionID ? { claudeSessionID: payload.claudeSessionID } : {}),
+      }
+
+      if (payload.type === "user") {
+        const message = yield* session.updateMessage({
+          id: MessageID.ascending(),
+          sessionID,
+          role: "user" as const,
+          time: { created: now },
+          agent: "claude-cli",
+          model: { providerID: payload.providerID, modelID: payload.modelID },
+        })
+        const part = yield* session.updatePart({
+          id: PartID.ascending(),
+          messageID: message.id,
+          sessionID,
+          type: "text" as const,
+          text: payload.text,
+          metadata,
+        })
+        return { messageID: message.id, partID: part.id }
+      }
+
+      const lastUser = yield* SessionError.mapStorageNotFound(
+        session.findMessage(sessionID, (message) => message.info.role === "user"),
+      )
+      if (Option.isNone(lastUser)) return yield* new HttpApiError.BadRequest({})
+      const instanceCtx = yield* InstanceState.context
+      const message = yield* session.updateMessage({
+        id: MessageID.ascending(),
+        role: "assistant" as const,
+        parentID: lastUser.value.info.id,
+        sessionID,
+        mode: "claude-cli",
+        agent: "claude-cli",
+        path: { cwd: instanceCtx.directory, root: instanceCtx.worktree },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: payload.modelID,
+        providerID: payload.providerID,
+        time: { created: now, completed: now },
+        finish: "tool-calls",
+      })
+      const part = yield* session.updatePart(
+        payload.type === "text"
+          ? {
+              id: PartID.ascending(),
+              messageID: message.id,
+              sessionID,
+              type: "text" as const,
+              text: payload.text,
+              time: { start: now, end: now },
+              metadata,
+            }
+          : {
+              id: PartID.ascending(),
+              messageID: message.id,
+              sessionID,
+              type: "tool" as const,
+              callID: payload.callID,
+              tool: payload.tool,
+              state: payload.error
+                ? {
+                    status: "error" as const,
+                    input: payload.input,
+                    error: payload.output,
+                    metadata,
+                    time: { start: now, end: now },
+                  }
+                : {
+                    status: "completed" as const,
+                    input: payload.input,
+                    output: payload.output,
+                    title: payload.tool,
+                    metadata,
+                    time: { start: now, end: now },
+                  },
+            },
+      )
+      return { messageID: message.id, partID: part.id }
+    })
+
     return handlers
       .handle("list", list)
       .handle("status", status)
@@ -551,5 +644,6 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("deletePart", deletePart)
       .handle("updatePart", updatePart)
       .handle("agentCard", agentCard)
+      .handle("externalTranscript", externalTranscript)
   }),
 )

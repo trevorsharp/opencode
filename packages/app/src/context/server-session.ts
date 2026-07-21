@@ -59,6 +59,17 @@ function activeBackgroundSessionOwners(
   return owners
 }
 
+function activeWorkflowCardOwners(parts: Record<string, Part[] | undefined>) {
+  const owners = new Set<string>()
+  for (const items of Object.values(parts)) {
+    for (const part of items ?? []) {
+      if (!part || part.type !== "tool" || part.tool !== "workflow") continue
+      if (part.state.status === "pending" || part.state.status === "running") owners.add(part.sessionID)
+    }
+  }
+  return owners
+}
+
 export function sessionHasActiveBackgroundDescendant(
   sessionID: string,
   info: Record<string, Session | undefined>,
@@ -183,6 +194,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
   })
   const syncBackgroundWorking = () => {
     const owners = activeBackgroundSessionOwners(data.info, data.session_status)
+    for (const owner of activeWorkflowCardOwners(data.part)) owners.add(owner)
     setData(
       "background_working",
       produce((draft) => {
@@ -195,7 +207,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
   }
   const set = ((...input: unknown[]) => {
     const result = (setData as (...args: unknown[]) => unknown)(...input)
-    if (input[0] === "info" || input[0] === "session_status") syncBackgroundWorking()
+    if (input[0] === "info" || input[0] === "session_status" || input[0] === "part") syncBackgroundWorking()
     return result
   }) as typeof setData
   const requests = new Map<string, Promise<Session>>()
@@ -555,6 +567,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
         for (const message of dropped) deleteMessageParts(draft, message.id)
       }),
     )
+    syncBackgroundWorking()
     return messageIDs
   }
 
@@ -610,6 +623,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
       setData("part", item.id, reconcile(parts, { key: "id" }))
       orphanParts.get(sessionID)?.delete(item.id)
     }
+    syncBackgroundWorking()
   }
 
   const applyMessagePage = (
@@ -892,6 +906,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
             deleteMessageParts(draft, props.messageID)
           }),
         )
+        syncBackgroundWorking()
         return
       }
       case "message.part.updated": {
@@ -940,6 +955,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
         const parts = data.part[part.messageID]
         if (!parts) {
           setData("part", part.messageID, [part])
+          syncBackgroundWorking()
           return
         }
         const result = Binary.search(parts, part.id, (item) => item.id)
@@ -950,6 +966,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
             next.splice(result.index, 0, part)
             return next
           })
+        syncBackgroundWorking()
         return
       }
       case "message.part.removed": {
@@ -988,6 +1005,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
             if (parts.length === 0) delete draft.part[props.messageID]
           }),
         )
+        syncBackgroundWorking()
         return
       }
       case "message.part.delta": {

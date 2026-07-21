@@ -175,9 +175,26 @@ const WorkspaceActions = (props: {
   clearHoverProjectSoon: WorkspaceSidebarContext["clearHoverProjectSoon"]
   navigateToNewSession: () => void
 }): JSX.Element => (
-  <div
-    class="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-100 pointer-events-auto"
-  >
+  <div class="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-100 pointer-events-auto">
+    <Show when={!props.touch()}>
+      <Tooltip value={props.language.t("command.session.new")} placement="top">
+        <IconButtonV2
+          icon={<IconV2 name="edit" size="small" />}
+          variant="ghost"
+          size="small"
+          class="size-6 rounded-md opacity-0 pointer-events-none group-hover/workspace:opacity-100 group-hover/workspace:pointer-events-auto group-focus-within/workspace:opacity-100 group-focus-within/workspace:pointer-events-auto"
+          data-action="workspace-new-session"
+          data-workspace={base64Encode(props.directory)}
+          aria-label={props.language.t("command.session.new")}
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            props.clearHoverProjectSoon()
+            props.navigateToNewSession()
+          }}
+        />
+      </Tooltip>
+    </Show>
     <DropdownMenu
       modal={!props.sidebarHovering()}
       open={props.menuOpen()}
@@ -224,25 +241,6 @@ const WorkspaceActions = (props: {
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu>
-    <Show when={!props.touch()}>
-      <Tooltip value={props.language.t("command.session.new")} placement="top">
-        <IconButtonV2
-          icon={<IconV2 name="edit" size="small" />}
-          variant="ghost"
-          size="small"
-          class="size-6 rounded-md opacity-0 pointer-events-none group-hover/workspace:opacity-100 group-hover/workspace:pointer-events-auto group-focus-within/workspace:opacity-100 group-focus-within/workspace:pointer-events-auto"
-          data-action="workspace-new-session"
-          data-workspace={base64Encode(props.directory)}
-          aria-label={props.language.t("command.session.new")}
-          onClick={(event) => {
-            event.preventDefault()
-            event.stopPropagation()
-            props.clearHoverProjectSoon()
-            props.navigateToNewSession()
-          }}
-        />
-      </Tooltip>
-    </Show>
   </div>
 )
 

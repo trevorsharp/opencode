@@ -1202,6 +1202,16 @@ function UserMessageComments(props: { comments: UserMessageComment[]; bounded: b
   )
 }
 
+function agentDisplayName(agent: string | undefined) {
+  if (agent === "claude-cli") return "Claude Code"
+  return agent ? agent[0]?.toUpperCase() + agent.slice(1) : ""
+}
+
+function modelDisplayName(providerID: string, modelID: string) {
+  if (providerID === "claude-cli" && modelID === "fable") return "Fable 5"
+  return modelID
+}
+
 export function UserMessageDisplay(props: {
   message: UserMessage
   parts: PartType[]
@@ -1240,7 +1250,7 @@ export function UserMessageDisplay(props: {
     const modelID = props.message.model?.modelID
     if (!providerID || !modelID) return ""
     const match = data.store.provider?.all?.get(providerID)
-    return match?.models?.[modelID]?.name ?? modelID
+    return match?.models?.[modelID]?.name ?? modelDisplayName(providerID, modelID)
   })
   const timefmt = createMemo(() => new Intl.DateTimeFormat(i18n.locale(), { timeStyle: "short" }))
 
@@ -1251,8 +1261,7 @@ export function UserMessageDisplay(props: {
   })
 
   const metaHead = createMemo(() => {
-    const agent = props.message.agent
-    const items = [agent ? agent[0]?.toUpperCase() + agent.slice(1) : "", model()]
+    const items = [agentDisplayName(props.message.agent), model()]
     return items.filter((x) => !!x).join("\u00A0\u00B7\u00A0")
   })
 
@@ -1678,7 +1687,7 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
     if (props.message.role !== "assistant") return ""
     const message = props.message as AssistantMessage
     const match = data.store.provider?.all?.get(message.providerID)
-    return match?.models?.[message.modelID]?.name ?? message.modelID
+    return match?.models?.[message.modelID]?.name ?? modelDisplayName(message.providerID, message.modelID)
   })
 
   const duration = createMemo(() => {
@@ -1704,9 +1713,8 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
 
   const meta = createMemo(() => {
     if (props.message.role !== "assistant") return ""
-    const agent = (props.message as AssistantMessage).agent
     const items = [
-      agent ? agent[0]?.toUpperCase() + agent.slice(1) : "",
+      agentDisplayName((props.message as AssistantMessage).agent),
       model(),
       duration(),
       interrupted() ? i18n.t("ui.message.interrupted") : "",
@@ -2141,17 +2149,21 @@ function WorkflowStatusIcon(props: { status: string }) {
   )
 }
 
-function progressModelLabel(row: any) {
-  if (typeof row?.model !== "string" || !row.model) return
-  const separator = row.model.indexOf("/")
-  const model = separator === -1 ? row.model : row.model.slice(separator + 1)
-  if (typeof row.variant !== "string" || !row.variant || model.endsWith(` (${row.variant})`)) return model
-  return `${model} (${row.variant})`
-}
-
 function WorkflowAgentRow(props: { row: any; onOpen: () => void }) {
+  const data = useData()
   const clickable = () => !!props.row?.sessionID
-  const model = () => progressModelLabel(props.row)
+  const model = createMemo(() => {
+    if (typeof props.row?.model !== "string" || !props.row.model) return
+    const separator = props.row.model.indexOf("/")
+    const providerID = separator === -1 ? "" : props.row.model.slice(0, separator)
+    const rawModel = separator === -1 ? props.row.model : props.row.model.slice(separator + 1)
+    const suffix = rawModel.match(/^(.*?)(?: \(([^()]*)\))?$/)
+    const modelID = suffix?.[1] ?? rawModel
+    const variant = typeof props.row.variant === "string" && props.row.variant ? props.row.variant : suffix?.[2]
+    const provider = data.store.provider?.all?.get(providerID)
+    const name = provider?.models?.[modelID]?.name ?? modelDisplayName(providerID, modelID)
+    return variant ? `${name} (${variant[0]?.toUpperCase()}${variant.slice(1)})` : name
+  })
   return (
     <div
       data-slot="workflow-agent"

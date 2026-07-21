@@ -18,6 +18,7 @@ const session = (id: string, parentID?: string, metadata?: Session["metadata"]):
 type UserMessage = Extract<Message, { role: "user" }>
 type AssistantMessage = Extract<Message, { role: "assistant" }>
 type TextPart = Extract<Part, { type: "text" }>
+type ToolPart = Extract<Part, { type: "tool" }>
 type MessageResponse = {
   data: { info: Message; parts: Part[] }[]
   response: { headers: Headers }
@@ -58,6 +59,22 @@ const textPart = (messageID: string, input: Partial<TextPart> = {}): TextPart =>
   text: "text",
   ...input,
 })
+
+const workflowPart = (status: "pending" | "running" | "completed"): ToolPart =>
+  ({
+    id: "workflow-part",
+    sessionID: "root",
+    messageID: "workflow-message",
+    type: "tool",
+    callID: "workflow-call",
+    tool: "workflow",
+    state:
+      status === "pending"
+        ? { status, input: {}, raw: "" }
+        : status === "running"
+          ? { status, input: {}, time: { start: 1 } }
+          : { status, input: {}, output: "", title: "workflow", time: { start: 1, end: 2 } },
+  }) as ToolPart
 
 const response = (data: MessageResponse["data"] = [], cursor?: string): MessageResponse => ({
   data,
@@ -248,6 +265,18 @@ describe("server session", () => {
       store.set("session_status", "first-child", { type: "idle" })
       expect(store.data.session_background_working("first")).toBe(false)
       expect(store.data.session_background_working("second")).toBe(true)
+    })
+
+    test("tracks active workflow cards without child sessions", () => {
+      const store = setup({}).store
+      const message = assistantMessage("workflow-message", "user", { sessionID: "root" })
+      store.set("message", "root", [message])
+
+      store.apply({ type: "message.part.updated", properties: { part: workflowPart("running") } })
+      expect(store.data.session_background_working("root")).toBe(true)
+
+      store.apply({ type: "message.part.updated", properties: { part: workflowPart("completed") } })
+      expect(store.data.session_background_working("root")).toBe(false)
     })
   })
 

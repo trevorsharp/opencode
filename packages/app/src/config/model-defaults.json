@@ -3,10 +3,6 @@
     {
       "providerID": "openai",
       "modelID": "gpt-5.6-sol"
-    },
-    {
-      "providerID": "github-copilot",
-      "modelID": "claude-fable-5"
     }
   ]
 }
