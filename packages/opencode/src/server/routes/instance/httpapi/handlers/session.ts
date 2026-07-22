@@ -553,6 +553,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           text: payload.text,
           metadata,
         })
+        yield* statusSvc.set(sessionID, { type: "busy" })
         return { messageID: message.id, partID: part.id }
       }
 
