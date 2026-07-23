@@ -2,12 +2,24 @@ import { base64Encode } from "@opencode-ai/core/util/encode"
 import { ServerConnection } from "@/context/server"
 import { decode64 } from "@/utils/base64"
 
+export const cancelProjectNavigationEvent = "opencode:cancel-project-navigation"
+
+export function cancelPendingProjectNavigation() {
+  window.dispatchEvent(new Event(cancelProjectNavigationEvent))
+}
+
 export function sessionHref(server: ServerConnection.Key, sessionID: string) {
   return `/server/${base64Encode(server)}/session/${sessionID}`
 }
 
 export function legacySessionHref(directory: string, sessionID: string) {
   return `/${base64Encode(directory)}/session/${sessionID}`
+}
+
+export function legacyNewSessionHref(directory: string, search: string) {
+  const root = new URLSearchParams(search).get("root")
+  const query = root ? `?root=${encodeURIComponent(root)}` : ""
+  return `/${base64Encode(directory)}/session${query}`
 }
 
 export function requireServerKey(segment: string | undefined) {

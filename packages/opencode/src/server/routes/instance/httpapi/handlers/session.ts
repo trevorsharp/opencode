@@ -62,6 +62,27 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const summary = yield* SessionSummary.Service
     const events = yield* EventV2Bridge.Service
     const scope = yield* Scope.Scope
+    const externalTranscriptRuns = new Map<SessionID, Map<string, object>>()
+
+    const finishExternalTranscriptRun = Effect.fnUntraced(function* (
+      sessionID: SessionID,
+      key: string,
+      token?: object,
+    ) {
+      const runs = externalTranscriptRuns.get(sessionID)
+      if (token && runs?.get(key) !== token) return
+      const run = runs?.get(key)
+      runs?.delete(key)
+      if (run) yield* statusSvc.release(sessionID, run)
+      if (runs?.size) return
+      externalTranscriptRuns.delete(sessionID)
+      const nativeIdle = yield* runState.assertNotBusy(sessionID).pipe(
+        Effect.as(true),
+        Effect.catch(() => Effect.succeed(false)),
+      )
+      if (!nativeIdle) return
+      yield* statusSvc.set(sessionID, { type: "idle" })
+    })
 
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
       const directory = ctx.query.directory ? yield* InstanceState.directory : undefined
@@ -469,13 +490,20 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           time: { ...info.time, completed: now },
         })
 
+      if (!!payload.messageID !== !!payload.partID) return yield* new HttpApiError.BadRequest({})
       if (payload.messageID && payload.partID) {
         const existing = yield* session.getPart({
           sessionID,
           messageID: payload.messageID,
           partID: payload.partID,
         })
-        if (!existing || existing.type !== "tool") return yield* new HttpApiError.BadRequest({})
+        if (
+          !existing ||
+          existing.type !== "tool" ||
+          existing.state.metadata?.uiOnly !== true ||
+          existing.state.metadata.parentSessionId !== sessionID
+        )
+          return yield* new HttpApiError.BadRequest({})
         const start = existing.state.status === "pending" ? now : existing.state.time.start
         yield* session.updatePart({ ...existing, state: state(start) })
         if (payload.status === "completed" || payload.status === "error") {
@@ -486,6 +514,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
             yield* finalizeMessage(message.value.info)
           }
         }
+        yield* session.touch(sessionID)
         return { messageID: payload.messageID, partID: payload.partID }
       }
 
@@ -520,6 +549,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         state: state(now),
       })
       if (payload.status === "completed" || payload.status === "error") yield* finalizeMessage(message)
+      yield* session.touch(sessionID)
       return { messageID: message.id, partID: part.id }
     })
 
@@ -535,6 +565,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         external: true,
         ...(payload.claudeSessionID ? { claudeSessionID: payload.claudeSessionID } : {}),
       }
+      const runKey = payload.claudeSessionID ?? "default"
 
       if (payload.type === "user") {
         const message = yield* session.updateMessage({
@@ -553,7 +584,18 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           text: payload.text,
           metadata,
         })
-        yield* statusSvc.set(sessionID, { type: "busy" })
+        const run = {}
+        const runs = externalTranscriptRuns.get(sessionID) ?? new Map<string, object>()
+        const previous = runs.get(runKey)
+        runs.set(runKey, run)
+        externalTranscriptRuns.set(sessionID, runs)
+        yield* statusSvc.hold(sessionID, run)
+        if (previous) yield* statusSvc.release(sessionID, previous)
+        yield* session.touch(sessionID)
+        yield* Effect.gen(function* () {
+          yield* Effect.sleep("1 minute")
+          yield* finishExternalTranscriptRun(sessionID, runKey, run)
+        }).pipe(Effect.forkIn(scope))
         return { messageID: message.id, partID: part.id }
       }
 
@@ -613,6 +655,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
                   },
             },
       )
+      yield* finishExternalTranscriptRun(sessionID, runKey)
+      yield* session.touch(sessionID)
       return { messageID: message.id, partID: part.id }
     })
 

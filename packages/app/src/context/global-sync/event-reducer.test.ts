@@ -70,6 +70,7 @@ const baseState = (input: Partial<State> = {}) =>
     path: { directory: "/tmp" } as State["path"],
     session: [],
     sessionTotal: 0,
+    sessionLoaded: true,
     session_status: {},
     session_diff: {},
     todo: {},
@@ -102,6 +103,34 @@ describe("applyGlobalEvent", () => {
 
     expect(project.map((x) => x.id)).toEqual(["a", "b", "c"])
     expect(refreshCount).toBe(0)
+  })
+
+  test("ignores stale project.updated events", () => {
+    const current = {
+      id: "a",
+      worktree: "/current",
+      time: { created: 1, updated: 3 },
+      sandboxes: ["/current/workspace"],
+    } as Project
+    const project = [current]
+    applyGlobalEvent({
+      event: {
+        type: "project.updated",
+        properties: {
+          id: "a",
+          worktree: "/stale",
+          time: { created: 1, updated: 2 },
+          sandboxes: [],
+        },
+      },
+      project,
+      refresh() {},
+      setGlobalProject(next) {
+        if (typeof next === "function") next(project)
+      },
+    })
+
+    expect(project).toEqual([current])
   })
 
   test("handles global.disposed by triggering refresh", () => {

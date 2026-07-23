@@ -182,12 +182,14 @@ export const loadProvidersQuery = (scope: ServerScope, directory: string | null,
   queryOptions({
     queryKey: [scope, directory, "providers"],
     queryFn: () => retry(() => sdk.provider.list().then((x) => normalizeProviderList(x.data!))),
+    staleTime: 15_000,
   })
 
 export const loadAgentsQuery = (scope: ServerScope, directory: string | null, sdk: OpencodeClient) =>
   queryOptions({
     queryKey: [scope, directory, "agents"],
     queryFn: () => retry(() => sdk.app.agents().then((x) => normalizeAgentList(x.data))),
+    staleTime: 15_000,
   })
 
 export const loadPathQuery = (scope: ServerScope, directory: string | null, sdk: OpencodeClient) =>
@@ -350,11 +352,10 @@ export async function bootstrapDirectory(input: {
             )
           }),
         ),
-      () => Promise.resolve(input.loadSessions(input.directory)),
       input.mcp && (() => input.queryClient.fetchQuery(loadMcpQuery(input.scope, input.directory, input.sdk))),
       input.mcp && (() => input.queryClient.fetchQuery(loadMcpResourcesQuery(input.scope, input.directory, input.sdk))),
       () =>
-        input.queryClient.fetchQuery(loadProvidersQuery(input.scope, input.directory, input.sdk)).catch((err) => {
+        input.queryClient.ensureQueryData(loadProvidersQuery(input.scope, input.directory, input.sdk)).catch((err) => {
           const project = getFilename(input.directory)
           showToast({
             variant: "error",

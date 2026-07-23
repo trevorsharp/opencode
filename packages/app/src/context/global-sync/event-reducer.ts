@@ -48,6 +48,8 @@ export function applyGlobalEvent(input: {
   const properties = input.event.properties as Project
   const result = Binary.search(input.project, properties.id, (s) => s.id)
   if (result.found) {
+    const current = input.project[result.index]
+    if (current && current.time.updated > properties.time.updated) return
     input.setGlobalProject(
       produce((draft) => {
         draft[result.index] = { ...draft[result.index], ...properties }

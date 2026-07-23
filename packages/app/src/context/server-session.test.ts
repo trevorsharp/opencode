@@ -247,35 +247,40 @@ describe("server session", () => {
       expect(sessionHasActiveBackgroundDescendant("root", info, { first: { type: "busy" } })).toBe(false)
     })
 
-    test("keeps background activity indexed by owner", () => {
+    test("keeps background activity indexed by owner", async () => {
       const store = setup({}).store
       store.remember(session("first"))
       store.remember(background("first-child", "first", "first"))
       store.remember(session("second"))
       store.remember(background("second-child", "second", "second"))
       store.set("session_status", "first-child", { type: "busy" })
+      await Promise.resolve()
 
       expect(store.data.session_background_working("first")).toBe(true)
       expect(store.data.session_background_working("second")).toBe(false)
 
       store.set("session_status", "second-child", { type: "busy" })
+      await Promise.resolve()
       expect(store.data.session_background_working("first")).toBe(true)
       expect(store.data.session_background_working("second")).toBe(true)
 
       store.set("session_status", "first-child", { type: "idle" })
+      await Promise.resolve()
       expect(store.data.session_background_working("first")).toBe(false)
       expect(store.data.session_background_working("second")).toBe(true)
     })
 
-    test("tracks active workflow cards without child sessions", () => {
+    test("tracks active workflow cards without child sessions", async () => {
       const store = setup({}).store
       const message = assistantMessage("workflow-message", "user", { sessionID: "root" })
       store.set("message", "root", [message])
 
       store.apply({ type: "message.part.updated", properties: { part: workflowPart("running") } })
+      await Promise.resolve()
       expect(store.data.session_background_working("root")).toBe(true)
 
       store.apply({ type: "message.part.updated", properties: { part: workflowPart("completed") } })
+      await Promise.resolve()
       expect(store.data.session_background_working("root")).toBe(false)
     })
   })

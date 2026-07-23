@@ -220,21 +220,19 @@ export type Session = {
   }
 }
 
-export type OutputFormatText = {
-  type: "text"
-}
-
 export type JsonSchema = {
   [key: string]: unknown
 }
 
-export type OutputFormatJsonSchema = {
-  type: "json_schema"
-  schema: JsonSchema
-  retryCount?: number
-}
-
-export type OutputFormat = OutputFormatText | OutputFormatJsonSchema
+export type OutputFormat =
+  | {
+      type: "text"
+    }
+  | {
+      type: "json_schema"
+      schema: JsonSchema
+      retryCount?: number
+    }
 
 export type UserMessage = {
   id: string
@@ -2154,6 +2152,7 @@ export type Worktree = {
   branch?: string
   description?: string
   directory: string
+  root?: string
 }
 
 export type WorktreeError = {
@@ -2803,16 +2802,6 @@ export type ProviderNotFoundError = {
   providerID: string
   message: string
 }
-
-export type OutputFormat1 =
-  | {
-      type: "text"
-    }
-  | {
-      type: "json_schema"
-      schema: JsonSchema
-      retryCount?: number
-    }
 
 export type SessionStatus2 = {
   id: string
@@ -10579,6 +10568,71 @@ export type SessionAgentCardResponses = {
 }
 
 export type SessionAgentCardResponse = SessionAgentCardResponses[keyof SessionAgentCardResponses]
+
+export type SessionExternalTranscriptData = {
+  body?:
+    | {
+        providerID: string
+        modelID: string
+        claudeSessionID?: string
+        type: "user"
+        text: string
+      }
+    | {
+        providerID: string
+        modelID: string
+        claudeSessionID?: string
+        type: "text"
+        text: string
+      }
+    | {
+        providerID: string
+        modelID: string
+        claudeSessionID?: string
+        type: "tool"
+        callID: string
+        tool: string
+        input: {
+          [key: string]: unknown
+        }
+        output: string
+        error?: boolean
+      }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/external-transcript"
+}
+
+export type SessionExternalTranscriptErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionExternalTranscriptError = SessionExternalTranscriptErrors[keyof SessionExternalTranscriptErrors]
+
+export type SessionExternalTranscriptResponses = {
+  /**
+   * Successfully appended external transcript entry
+   */
+  200: {
+    messageID: string
+    partID: string
+  }
+}
+
+export type SessionExternalTranscriptResponse =
+  SessionExternalTranscriptResponses[keyof SessionExternalTranscriptResponses]
 
 export type SyncStartData = {
   body?: never

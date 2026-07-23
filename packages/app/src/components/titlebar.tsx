@@ -28,6 +28,8 @@ import { tabKey, useTabs } from "@/context/tabs"
 import type { PromptSession } from "@/context/prompt"
 import "./titlebar.css"
 import { newTabTooltipKeybind } from "./command-tooltip-keybind"
+import { decode64 } from "@/utils/base64"
+import { cancelPendingProjectNavigation, legacyNewSessionHref } from "@/utils/session-route"
 
 type TauriDesktopWindow = {
   startDragging?: () => Promise<void>
@@ -616,7 +618,10 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                             tabIndex={layout.sidebar.opened() ? -1 : undefined}
                             onClick={() => {
                               if (!params.dir) return
-                              navigate(`/${params.dir}/session`)
+                              const directory = decode64(params.dir)
+                              if (!directory) return
+                              cancelPendingProjectNavigation()
+                              navigate(legacyNewSessionHref(directory, location.search))
                             }}
                             aria-label={language.t("command.session.new")}
                             aria-current={creating() ? "page" : undefined}

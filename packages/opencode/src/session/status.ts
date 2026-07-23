@@ -14,6 +14,8 @@ export interface Interface {
   readonly get: (sessionID: SessionID) => Effect.Effect<Info>
   readonly list: () => Effect.Effect<Map<SessionID, Info>>
   readonly set: (sessionID: SessionID, status: Info) => Effect.Effect<void>
+  readonly hold: (sessionID: SessionID, owner: object) => Effect.Effect<void>
+  readonly release: (sessionID: SessionID, owner: object) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionStatus") {}
@@ -24,30 +26,49 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
 
     const state = yield* InstanceState.make(
-      Effect.fn("SessionStatus.state")(() => Effect.succeed(new Map<SessionID, Info>())),
+      Effect.fn("SessionStatus.state")(() =>
+        Effect.succeed({ status: new Map<SessionID, Info>(), holds: new Map<SessionID, Set<object>>() }),
+      ),
     )
 
     const get = Effect.fn("SessionStatus.get")(function* (sessionID: SessionID) {
       const data = yield* InstanceState.get(state)
-      return data.get(sessionID) ?? { type: "idle" as const }
+      return data.status.get(sessionID) ?? { type: "idle" as const }
     })
 
     const list = Effect.fn("SessionStatus.list")(function* () {
-      return new Map(yield* InstanceState.get(state))
+      return new Map((yield* InstanceState.get(state)).status)
     })
 
     const set = Effect.fn("SessionStatus.set")(function* (sessionID: SessionID, status: Info) {
       const data = yield* InstanceState.get(state)
+      if (status.type === "idle" && data.holds.get(sessionID)?.size) return
       yield* events.publish(Event.Status, { sessionID, status })
       if (status.type === "idle") {
         yield* events.publish(Event.Idle, { sessionID })
-        data.delete(sessionID)
+        data.status.delete(sessionID)
         return
       }
-      data.set(sessionID, status)
+      data.status.set(sessionID, status)
     })
 
-    return Service.of({ get, list, set })
+    const hold = Effect.fn("SessionStatus.hold")(function* (sessionID: SessionID, owner: object) {
+      const data = yield* InstanceState.get(state)
+      const owners = data.holds.get(sessionID) ?? new Set<object>()
+      owners.add(owner)
+      data.holds.set(sessionID, owners)
+      yield* set(sessionID, { type: "busy" })
+    })
+
+    const release = Effect.fn("SessionStatus.release")(function* (sessionID: SessionID, owner: object) {
+      const data = yield* InstanceState.get(state)
+      const owners = data.holds.get(sessionID)
+      owners?.delete(owner)
+      if (owners?.size) return
+      data.holds.delete(sessionID)
+    })
+
+    return Service.of({ get, list, set, hold, release })
   }),
 )
 

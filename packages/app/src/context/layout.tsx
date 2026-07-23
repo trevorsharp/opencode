@@ -445,9 +445,9 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
     function enrich(project: { worktree: string; expanded: boolean }) {
       const [childStore] = serverSync().child(project.worktree, { bootstrap: false })
       const projectID = childStore.project
-      const metadata = projectID
-        ? serverSync().data.project.find((x) => x.id === projectID)
-        : serverSync().data.project.find((x) => x.worktree === project.worktree)
+      const metadata =
+        (projectID ? serverSync().data.project.find((x) => x.id === projectID) : undefined) ??
+        serverSync().data.project.find((x) => pathKey(x.worktree) === pathKey(project.worktree))
 
       const base = mergeProjectMetadata(metadata, project, childStore.projectMeta)
       if (childStore.icon) {

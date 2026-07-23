@@ -2,7 +2,6 @@ import { useNavigate, useParams } from "@solidjs/router"
 import { createEffect, createMemo, For, Show, type Accessor, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createSortable } from "@thisbeyond/solid-dnd"
-import { createMediaQuery } from "@solid-primitives/media"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { getFilename } from "@opencode-ai/core/util/path"
 import { Button } from "@opencode-ai/ui/button"
@@ -10,8 +9,6 @@ import { Collapsible } from "@opencode-ai/ui/collapsible"
 import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { Icon } from "@opencode-ai/ui/icon"
 import { IconButton } from "@opencode-ai/ui/icon-button"
-import { IconButtonV2 } from "@opencode-ai/ui/v2/icon-button-v2"
-import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
 import { Spinner } from "@opencode-ai/ui/spinner"
 import { Tooltip } from "@opencode-ai/ui/tooltip"
 import { type Session } from "@opencode-ai/sdk/v2/client"
@@ -20,6 +17,7 @@ import { useServerSync, useQueryOptions } from "@/context/server-sync"
 import { useLanguage } from "@/context/language"
 import { useNotification } from "@/context/notification"
 import { pathKey } from "@/utils/path-key"
+import { cancelPendingProjectNavigation } from "@/utils/session-route"
 import { NewSessionItem, SessionItem, SessionSkeleton } from "./sidebar-items"
 import { displayName, sortedRootSessions } from "./helpers"
 import { useIsFetching } from "@tanstack/solid-query"
@@ -167,7 +165,6 @@ const WorkspaceActions = (props: {
   menuOpen: Accessor<boolean>
   setMenuOpen: (open: boolean) => void
   sidebarHovering: Accessor<boolean>
-  touch: Accessor<boolean>
   language: ReturnType<typeof useLanguage>
   showRemoveFromWorkspaceDialog: WorkspaceSidebarContext["showRemoveFromWorkspaceDialog"]
   ctx: WorkspaceSidebarContext
@@ -176,25 +173,6 @@ const WorkspaceActions = (props: {
   navigateToNewSession: () => void
 }): JSX.Element => (
   <div class="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-100 pointer-events-auto">
-    <Show when={!props.touch()}>
-      <Tooltip value={props.language.t("command.session.new")} placement="top">
-        <IconButtonV2
-          icon={<IconV2 name="edit" size="small" />}
-          variant="ghost"
-          size="small"
-          class="size-6 rounded-md opacity-0 pointer-events-none group-hover/workspace:opacity-100 group-hover/workspace:pointer-events-auto group-focus-within/workspace:opacity-100 group-focus-within/workspace:pointer-events-auto"
-          data-action="workspace-new-session"
-          data-workspace={base64Encode(props.directory)}
-          aria-label={props.language.t("command.session.new")}
-          onClick={(event) => {
-            event.preventDefault()
-            event.stopPropagation()
-            props.clearHoverProjectSoon()
-            props.navigateToNewSession()
-          }}
-        />
-      </Tooltip>
-    </Show>
     <DropdownMenu
       modal={!props.sidebarHovering()}
       open={props.menuOpen()}
@@ -213,6 +191,15 @@ const WorkspaceActions = (props: {
       </Tooltip>
       <DropdownMenu.Portal>
         <DropdownMenu.Content>
+          <DropdownMenu.Item
+            onSelect={() => {
+              props.clearHoverProjectSoon()
+              props.navigateToNewSession()
+            }}
+          >
+            <DropdownMenu.ItemLabel>{props.language.t("command.session.new")}</DropdownMenu.ItemLabel>
+          </DropdownMenu.Item>
+          <DropdownMenu.Separator />
           <DropdownMenu.Item
             onSelect={() => props.ctx.openRemoteVSCode(props.directory)}
             disabled={!props.ctx.canOpenRemoteVSCode()}
@@ -339,12 +326,14 @@ export const SortableWorkspace = (props: {
   const visibleSessions = createMemo(() =>
     sessions().filter((session) => {
       const sessionStore = serverSync().session.data
+      const messages = sessionStore.message[session.id]
       const emptyDraft =
+        messages !== undefined &&
+        messages.length === 0 &&
         draftTitlePattern.test(session.title) &&
         (session.cost ?? 0) === 0 &&
         !hasTokenUsage(session) &&
-        !session.summary &&
-        !sessionStore.message[session.id]?.length
+        !session.summary
       return !emptyDraft || sessionStore.session_working(session.id)
     }),
   )
@@ -356,16 +345,14 @@ export const SortableWorkspace = (props: {
     return props.ctx.workspaceName(props.directory, props.project.id, branch) ?? name
   })
   const open = createMemo(() => props.ctx.workspaceExpanded(props.directory, local()))
-  const boot = createMemo(() => open() || active())
   const count = createMemo(() => visibleSessions().length)
   const hasMore = createMemo(() => workspaceStore.sessionTotal > sessions().length)
   const fetching = useIsFetching(() => queryOptions().sessions(pathKey(props.directory)))
   const busy = createMemo(() => props.ctx.isBusy(props.directory))
   const unseenCount = createMemo(() => notification.project.unseenCount(props.directory))
   const hasError = createMemo(() => notification.project.unseenHasError(props.directory))
-  const loading = () => fetching() > 0 && count() === 0
-  const touch = createMediaQuery("(hover: none)")
-  const showNew = createMemo(() => !loading() && (touch() || count() === 0 || (active() && !params.id)))
+  const loading = () => count() === 0 && (!workspaceStore.sessionLoaded || fetching() > 0)
+  const showNew = createMemo(() => !loading() && (count() === 0 || (active() && !params.id)))
   const loadMore = async () => {
     setWorkspaceStore("limit", (limit) => (limit ?? 0) + 5)
     await serverSync().project.loadSessions(props.directory)
@@ -400,6 +387,7 @@ export const SortableWorkspace = (props: {
   }
 
   const navigateToNewSession = () => {
+    cancelPendingProjectNavigation()
     navigate(`/${slug()}/session?root=${base64Encode(props.project.worktree)}`)
     requestAnimationFrame(() => {
       document.querySelector<HTMLElement>('[data-component="prompt-input"]')?.focus()
@@ -407,8 +395,12 @@ export const SortableWorkspace = (props: {
   }
 
   createEffect(() => {
-    if (!boot()) return
-    serverSync().child(props.directory, { bootstrap: true })
+    if (active()) {
+      serverSync().child(props.directory, { bootstrap: true })
+      return
+    }
+    if (!open()) return
+    void serverSync().project.loadSessions(props.directory)
   })
 
   const workspaceRow = (trigger: boolean) => (
@@ -461,7 +453,6 @@ export const SortableWorkspace = (props: {
             menuOpen={() => menu.open}
             setMenuOpen={(open) => setMenu("open", open)}
             sidebarHovering={props.ctx.sidebarHovering}
-            touch={touch}
             language={language}
             showRemoveFromWorkspaceDialog={props.ctx.showRemoveFromWorkspaceDialog}
             ctx={props.ctx}

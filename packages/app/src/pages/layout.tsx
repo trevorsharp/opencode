@@ -12,6 +12,7 @@ import {
   type Accessor,
 } from "solid-js"
 import { makeEventListener } from "@solid-primitives/event-listener"
+import { createMediaQuery } from "@solid-primitives/media"
 import { useLocation, useNavigate, useParams } from "@solidjs/router"
 import { useLayout, LocalProject } from "@/context/layout"
 import { useServerSync } from "@/context/server-sync"
@@ -51,6 +52,7 @@ import { setSessionHandoff } from "@/pages/session/handoff"
 import { SessionRouteKey, SessionStateKey } from "@/utils/server-scope"
 import { Identifier } from "@/utils/id"
 import { same } from "@/utils/same"
+import { cancelProjectNavigationEvent } from "@/utils/session-route"
 
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useTheme, type ColorScheme } from "@opencode-ai/ui/theme/context"
@@ -132,6 +134,7 @@ export default function LegacyLayout(props: ParentProps) {
   const command = useCommand()
   const theme = useTheme()
   const language = useLanguage()
+  const desktopSidebar = createMediaQuery("(min-width: 1280px)")
   createEffect(() => setV2Toast(false))
   onMount(() => {
     if (!window.matchMedia("(display-mode: standalone)").matches) return
@@ -187,6 +190,8 @@ export default function LegacyLayout(props: ParentProps) {
     autoselect: !initialDirectory,
     busyWorkspaces: {} as Record<string, boolean>,
     pendingWorkspaces: {} as Record<string, { directory: string; root: string }>,
+    pendingProjects: {} as Record<string, boolean>,
+    openingProject: undefined as string | undefined,
     hoverProject: undefined as string | undefined,
     scrollSessionKey: undefined as string | undefined,
     nav: undefined as HTMLElement | undefined,
@@ -275,6 +280,7 @@ export default function LegacyLayout(props: ParentProps) {
     makeEventListener(window, "blur", stop)
     makeEventListener(window, "blur", blur)
     makeEventListener(document, "visibilitychange", hide)
+    makeEventListener(window, cancelProjectNavigationEvent, cancelProjectNavigation)
   })
 
   const sidebarHovering = createMemo(() => !layout.sidebar.opened() && state.hoverProject !== undefined)
@@ -367,7 +373,8 @@ export default function LegacyLayout(props: ParentProps) {
     reset()
   }
 
-  const navigateWithSidebarReset = (href: string) => {
+  const navigateWithSidebarReset = (href: string, token?: number) => {
+    if (token === undefined) cancelProjectNavigation()
     clearSidebarHoverState()
     navigate(href)
     layout.mobileSidebar.hide()
@@ -455,7 +462,7 @@ export default function LegacyLayout(props: ParentProps) {
           setBusy(e.name, false)
           WorktreeState.ready(serverSDK().scope, e.name)
           const project = layout.projects.list().find((item) => item.worktree === projectRoot(e.name))
-          if (project) void refreshWorkspaceList(project)
+          if (project) void refreshWorkspaceList(project, true)
           return
         }
 
@@ -806,14 +813,28 @@ export default function LegacyLayout(props: ParentProps) {
     })
   }
 
-  const refreshWorkspaceList = async (project: LocalProject) => {
-    const workspaces = await serverSDK()
+  const workspaceRefreshes = new Map<string, Promise<Worktree[] | undefined>>()
+  const refreshWorkspaceList = async (project: LocalProject, force = false): Promise<Worktree[]> => {
+    const key = pathKey(project.worktree)
+    const existing = workspaceRefreshes.get(key)
+    if (existing) {
+      const workspaces = (await existing) ?? []
+      if (!force) return workspaces
+      return refreshWorkspaceList(project)
+    }
+    const request = serverSDK()
       .client.worktree.list({ directory: project.worktree })
       .then((x) => x.data ?? [])
       .catch(() => undefined)
-    if (!workspaces) return [] as Worktree[]
-    applyWorkspaceList(project, workspaces)
-    return workspaces
+      .then((workspaces) => {
+        if (workspaces) applyWorkspaceList(project, workspaces)
+        return workspaces
+      })
+      .finally(() => {
+        workspaceRefreshes.delete(key)
+      })
+    workspaceRefreshes.set(key, request)
+    return (await request) ?? []
   }
 
   const workspaceSetting = createMemo(() => {
@@ -831,14 +852,14 @@ export default function LegacyLayout(props: ParentProps) {
       const projects = layout.projects
         .list()
         .filter((project) => project.vcs === "git" || isWorkspaceRootProject(project))
-      void Promise.all(projects.map(refreshWorkspaceList)).finally(() => {
+      void Promise.all(projects.map((project) => refreshWorkspaceList(project))).finally(() => {
         refreshing = false
       })
     }
     const visible = () => {
       if (document.visibilityState === "visible") refresh()
     }
-    const interval = setInterval(refresh, 2_000)
+    const interval = setInterval(refresh, 10_000)
     window.addEventListener("focus", refresh)
     document.addEventListener("visibilitychange", visible)
     refresh()
@@ -886,7 +907,7 @@ export default function LegacyLayout(props: ParentProps) {
 
     const result: Session[] = []
     for (const dir of dirs) {
-      const [dirStore] = serverSync().child(dir, { bootstrap: true })
+      const [dirStore] = serverSync().child(dir, { bootstrap: false })
       const dirSessions = sortedRootSessions(dirStore, now)
       result.push(...dirSessions)
     }
@@ -1043,16 +1064,12 @@ export default function LegacyLayout(props: ParentProps) {
   }
 
   createEffect(() => {
+    if (!params.id) return
     const sessions = currentSessions()
     if (sessions.length === 0) return
 
-    const index = params.id ? sessions.findIndex((s) => s.id === params.id) : 0
+    const index = sessions.findIndex((s) => s.id === params.id)
     if (index === -1) return
-
-    if (!params.id) {
-      const first = sessions[index]
-      if (first) prefetchSession(first, "high")
-    }
 
     warm(sessions, index)
   })
@@ -1440,10 +1457,94 @@ export default function LegacyLayout(props: ParentProps) {
     return root
   }
 
-  async function navigateToProject(directory: string | undefined) {
+  const projectAdmissions = new Map<string, Promise<void>>()
+
+  function admitProject(directory: string) {
+    const root = projectRoot(directory)
+    layout.projects.open(root)
+    const key = pathKey(root)
+    const existing = projectAdmissions.get(key)
+    if (existing) return existing
+
+    const refresh = serverSync()
+      .project.refresh()
+      .catch(() => undefined)
+    setState("pendingProjects", key, true)
+
+    const admission = Promise.all([
+      Promise.resolve(serverSync().project.loadSessions(root)),
+      refresh.then(async () => {
+        const project = layout.projects.list().find((item) => pathKey(item.worktree) === key)
+        if (!project) return
+        if (project.vcs !== "git" && !isWorkspaceRootProject(project)) return
+        await refreshWorkspaceList(project)
+      }),
+    ]).then(() => {})
+
+    projectAdmissions.set(key, admission)
+    void admission.then(
+      () => {
+        projectAdmissions.delete(key)
+        setState("pendingProjects", key, false)
+      },
+      () => {
+        projectAdmissions.delete(key)
+        setState("pendingProjects", key, false)
+      },
+    )
+    return admission
+  }
+
+  let projectNavigation = 0
+  let projectNavigationTarget: { href: string; token: number } | undefined
+  let observedLocation = `${routeLocation.pathname}${routeLocation.search}${routeLocation.hash}`
+  let observedProjectRoot = rootParam() ?? (currentDir() ? projectRoot(currentDir()) : undefined)
+
+  function cancelProjectNavigation() {
+    projectNavigation += 1
+    projectNavigationTarget = undefined
+    setState("openingProject", undefined)
+  }
+
+  createEffect(() => {
+    const href = `${routeLocation.pathname}${routeLocation.search}${routeLocation.hash}`
+    if (href === observedLocation) return
+    const directory = decode64(params.dir)
+    const root = rootParam() ?? (directory ? projectRoot(directory) : undefined)
+    const target = projectNavigationTarget
+    projectNavigationTarget = undefined
+    if (!target || target.href !== href) {
+      projectNavigation += 1
+      setState("openingProject", undefined)
+    }
+    if (pathKey(root ?? "") !== pathKey(observedProjectRoot ?? "")) {
+      reset()
+      setState("peek", undefined)
+      setState("peeked", false)
+    }
+    observedLocation = href
+    observedProjectRoot = root
+  })
+
+  function navigateToProject(directory: string | undefined) {
     if (!directory) return
+    const token = ++projectNavigation
+    const root = projectRoot(directory)
+    reset()
+    setState("peek", undefined)
+    setState("openingProject", root)
+    const admission = admitProject(root)
+    return resolveProjectNavigation(directory, token, admission).finally(() => {
+      if (projectNavigation !== token) return
+      setState("openingProject", undefined)
+    })
+  }
+
+  async function resolveProjectNavigation(directory: string, token: number, admission: Promise<void>) {
     const root = projectRoot(directory)
     server.projects.touch(root)
+    await admission.catch(() => undefined)
+    if (projectNavigation !== token) return
     const project = layout.projects.list().find((item) => item.worktree === root)
     let dirs = project
       ? effectiveWorkspaceOrder(root, [root, ...(project.sandboxes ?? [])], store.workspaceOrder[root])
@@ -1462,28 +1563,37 @@ export default function LegacyLayout(props: ParentProps) {
       return canOpen(target)
     }
     const openSession = async (target: { directory: string; id: string }) => {
+      if (projectNavigation !== token) return false
       if (!canOpen(target.directory)) return false
       const sync = serverSync().ensureDirSyncContext(target.directory)
       if (sync.session.get(target.id)) {
+        if (projectNavigation !== token) return false
         setStore("lastProjectSession", root, { directory: target.directory, id: target.id, at: Date.now() })
-        navigateWithSidebarReset(sessionHref(target.directory, target.id, root))
+        const href = sessionHref(target.directory, target.id, root)
+        projectNavigationTarget = { href, token }
+        navigateWithSidebarReset(href, token)
         return true
       }
       const resolved = await sync.session
         .sync(target.id)
         .then(() => sync.session.get(target.id))
         .catch(() => undefined)
+      if (projectNavigation !== token) return false
       if (!resolved?.directory) return false
       if (!canOpen(resolved.directory)) return false
       setStore("lastProjectSession", root, { directory: resolved.directory, id: resolved.id, at: Date.now() })
-      navigateWithSidebarReset(sessionHref(resolved.directory, resolved.id, root))
+      const href = sessionHref(resolved.directory, resolved.id, root)
+      projectNavigationTarget = { href, token }
+      navigateWithSidebarReset(href, token)
       return true
     }
 
     const projectSession = store.lastProjectSession[root]
     if (projectSession?.id) {
       await refreshDirs(projectSession.directory)
+      if (projectNavigation !== token) return
       const opened = await openSession(projectSession)
+      if (projectNavigation !== token) return
       if (opened) return
       clearLastProjectSession(root)
     }
@@ -1492,28 +1602,36 @@ export default function LegacyLayout(props: ParentProps) {
       dirs.map((item) => serverSync().child(item, { bootstrap: false })[0]),
       Date.now(),
     )
-    if (latest && (await openSession(latest))) {
-      return
+    if (latest) {
+      const opened = await openSession(latest)
+      if (projectNavigation !== token) return
+      if (opened) return
     }
 
+    await Promise.all(dirs.map((item) => serverSync().project.loadSessions(item)))
+    if (projectNavigation !== token) return
     const fetched = latestRootSession(
-      await Promise.all(
-        dirs.map(async (item) => ({
-          path: { directory: item },
-          session: await serverSDK()
-            .client.session.list({ directory: item })
-            .then((x) => x.data ?? [])
-            .catch(() => []),
-        })),
-      ),
+      dirs.map((item) => serverSync().child(item, { bootstrap: false })[0]),
       Date.now(),
     )
-    if (fetched && (await openSession(fetched))) {
-      return
+    if (fetched) {
+      const opened = await openSession(fetched)
+      if (projectNavigation !== token) return
+      if (opened) return
     }
 
-    navigateWithSidebarReset(sessionHref(root, undefined, root))
+    if (projectNavigation !== token) return
+    const href = sessionHref(root, undefined, root)
+    projectNavigationTarget = { href, token }
+    navigateWithSidebarReset(href, token)
   }
+
+  createEffect(() => {
+    if (!pageReady() || !layoutReady()) return
+    const directory = currentDir()
+    if (!directory) return
+    admitProject(rootParam() ?? directory)
+  })
 
   function navigateToSession(session: Session | undefined) {
     if (!session) return
@@ -1521,10 +1639,7 @@ export default function LegacyLayout(props: ParentProps) {
   }
 
   function openProject(directory: string, navigate = true) {
-    layout.projects.open(directory)
-    void serverSync()
-      .project.refresh()
-      .catch(() => undefined)
+    void admitProject(directory)
     if (navigate) return navigateToProject(directory)
   }
 
@@ -1727,6 +1842,7 @@ export default function LegacyLayout(props: ParentProps) {
     setBusy(directory, false)
 
     if (!result?.removed) return
+    WorktreeState.clear(serverSDK().scope, directory)
 
     clearWorkspaceTerminals(
       directory,
@@ -1767,7 +1883,7 @@ export default function LegacyLayout(props: ParentProps) {
     layout.projects.close(directory)
     layout.projects.open(root)
     const project = layout.projects.list().find((item) => item.worktree === root)
-    if (project) await refreshWorkspaceList(project)
+    if (project) await refreshWorkspaceList(project, true)
 
     if (shouldLeave) return
 
@@ -1851,8 +1967,7 @@ export default function LegacyLayout(props: ParentProps) {
         {
           label: language.t("command.session.new"),
           onClick: () => {
-            const href = `/${base64Encode(directory)}/session`
-            navigate(href)
+            navigate(sessionHref(directory, undefined, root))
             layout.mobileSidebar.hide()
           },
         },
@@ -2112,6 +2227,11 @@ export default function LegacyLayout(props: ParentProps) {
   }
 
   const sidebarProject = createMemo(() => {
+    const opening = state.openingProject
+    if (opening) {
+      const project = layout.projects.list().find((item) => pathKey(item.worktree) === pathKey(opening))
+      if (project) return project
+    }
     if (layout.sidebar.opened()) return currentProject()
     const hovered = hoverProjectData()
     if (hovered) return hovered
@@ -2184,11 +2304,11 @@ export default function LegacyLayout(props: ParentProps) {
     )
   }
 
-  const createWorkspace = async (project: LocalProject, name?: string) => {
+  const createWorkspace = async (source: LocalProject, name?: string, owner?: LocalProject) => {
     clearSidebarHoverState()
     const created = await serverSDK()
       .client.worktree.create({
-        directory: project.worktree,
+        directory: source.worktree,
         worktreeCreateInput: name ? { name, workspaceOnly: false } : undefined,
       })
       .then((x) => x.data)
@@ -2202,6 +2322,17 @@ export default function LegacyLayout(props: ParentProps) {
 
     if (!created?.directory) return
 
+    const featureRoot = created.root
+    const project: LocalProject =
+      owner ??
+      (featureRoot
+        ? (layout.projects.list().find((item) => pathKey(item.worktree) === pathKey(featureRoot)) ?? {
+            worktree: featureRoot,
+            expanded: true,
+          })
+        : source)
+    void admitProject(project.worktree)
+
     setWorkspaceName(
       created.directory,
       created.description ?? created.branch ?? getFilename(created.directory),
@@ -2213,8 +2344,12 @@ export default function LegacyLayout(props: ParentProps) {
     const key = pathKey(created.directory)
     const root = pathKey(local)
 
-    setBusy(created.directory, true, project.worktree)
     WorktreeState.pending(serverSDK().scope, created.directory)
+    setBusy(
+      created.directory,
+      WorktreeState.get(serverSDK().scope, created.directory)?.status === "pending",
+      project.worktree,
+    )
     setStore("workspaceExpanded", key, true)
     if (key !== created.directory) {
       setStore("workspaceExpanded", created.directory, true)
@@ -2227,7 +2362,7 @@ export default function LegacyLayout(props: ParentProps) {
       })
       return [created.directory, ...next]
     })
-    await refreshWorkspaceList(project)
+    await refreshWorkspaceList(project, true)
 
     serverSync().child(created.directory)
     navigateWithSidebarReset(sessionHref(created.directory, undefined, project.worktree))
@@ -2244,9 +2379,7 @@ export default function LegacyLayout(props: ParentProps) {
     const workspace = getFilename(feature.worktree)
     const create = async (directory: string | undefined) => {
       if (!directory) return
-      await createWorkspace({ worktree: directory, expanded: true }, workspace || name)
-      await refreshWorkspaceList(feature)
-      void navigateToProject(feature.worktree)
+      await createWorkspace({ worktree: directory, expanded: true }, workspace || name, feature)
     }
 
     pickDirectory({
@@ -2290,7 +2423,7 @@ export default function LegacyLayout(props: ParentProps) {
 
   const projectSidebarCtx: ProjectSidebarContext = {
     currentDir,
-    currentProject,
+    currentProject: sidebarProject,
     sidebarOpened: () => layout.sidebar.opened(),
     sidebarHovering,
     hoverProject: () => state.hoverProject,
@@ -2312,6 +2445,8 @@ export default function LegacyLayout(props: ParentProps) {
     canOpenPR,
     toggleProjectWorkspaces,
     workspacesEnabled: (project) => project.vcs === "git" || isWorkspaceRootProject(project),
+    projectPending: (directory) =>
+      !!state.pendingProjects[pathKey(directory)] || pathKey(state.openingProject ?? "") === pathKey(directory),
     workspaceIds,
     workspaceLabel,
     sessionProps: {
@@ -2678,7 +2813,7 @@ export default function LegacyLayout(props: ParentProps) {
       helpLabel={() => language.t("sidebar.help")}
       onOpenHelp={() => platform.openLink("https://opencode.ai/desktop-feedback")}
       renderPanel={() =>
-        mobile ? <SidebarPanel project={currentProject} mobile /> : <SidebarPanel project={currentProject} merged />
+        mobile ? <SidebarPanel project={sidebarProject} mobile /> : <SidebarPanel project={sidebarProject} merged />
       }
     />
   )
@@ -2699,30 +2834,28 @@ export default function LegacyLayout(props: ParentProps) {
       <div class="flex-1 min-h-0 min-w-0 flex">
         <div class="flex-1 min-h-0 relative">
           <div class="size-full relative overflow-x-hidden">
-            <nav
-              aria-label={language.t("sidebar.nav.projectsAndSessions")}
-              data-component="sidebar-nav-desktop"
-              classList={{
-                "hidden xl:block": true,
-                "absolute inset-y-0 left-0": true,
-                "z-10": true,
-              }}
-              style={{ width: `${side()}px` }}
-              ref={(el) => {
-                setState("nav", el)
-              }}
-              onMouseEnter={() => {
-                disarm()
-              }}
-              onMouseLeave={() => {
-                aim.reset()
-                if (!sidebarHovering()) return
+            <Show when={desktopSidebar()}>
+              <nav
+                aria-label={language.t("sidebar.nav.projectsAndSessions")}
+                data-component="sidebar-nav-desktop"
+                class="absolute inset-y-0 left-0 z-10"
+                style={{ width: `${side()}px` }}
+                ref={(el) => {
+                  setState("nav", el)
+                }}
+                onMouseEnter={() => {
+                  disarm()
+                }}
+                onMouseLeave={() => {
+                  aim.reset()
+                  if (!sidebarHovering()) return
 
-                arm(800)
-              }}
-            >
-              <div class="@container w-full h-full contain-strict">{sidebarContent()}</div>
-            </nav>
+                  arm(800)
+                }}
+              >
+                <div class="@container w-full h-full contain-strict">{sidebarContent()}</div>
+              </nav>
+            </Show>
 
             <Show when={layout.sidebar.opened()}>
               <div
@@ -2750,30 +2883,32 @@ export default function LegacyLayout(props: ParentProps) {
               style={{ left: "calc(4rem + 12px)" }}
             />
 
-            <div class="xl:hidden">
-              <div
-                classList={{
-                  "fixed inset-x-0 top-10 bottom-0 z-40 transition-opacity duration-200": true,
-                  "opacity-100 pointer-events-auto": layout.mobileSidebar.opened(),
-                  "opacity-0 pointer-events-none": !layout.mobileSidebar.opened(),
-                }}
-                onClick={(e) => {
-                  if (e.target === e.currentTarget) layout.mobileSidebar.hide()
-                }}
-              />
-              <nav
-                aria-label={language.t("sidebar.nav.projectsAndSessions")}
-                data-component="sidebar-nav-mobile"
-                classList={{
-                  "@container fixed top-10 bottom-0 left-0 z-50 w-full max-w-[400px] overflow-hidden border-r border-border-weaker-base bg-background-base transition-transform duration-200 ease-out": true,
-                  "translate-x-0": layout.mobileSidebar.opened(),
-                  "-translate-x-full": !layout.mobileSidebar.opened(),
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                {sidebarContent(true)}
-              </nav>
-            </div>
+            <Show when={!desktopSidebar()}>
+              <div>
+                <div
+                  classList={{
+                    "fixed inset-x-0 top-10 bottom-0 z-40 transition-opacity duration-200": true,
+                    "opacity-100 pointer-events-auto": layout.mobileSidebar.opened(),
+                    "opacity-0 pointer-events-none": !layout.mobileSidebar.opened(),
+                  }}
+                  onClick={(e) => {
+                    if (e.target === e.currentTarget) layout.mobileSidebar.hide()
+                  }}
+                />
+                <nav
+                  aria-label={language.t("sidebar.nav.projectsAndSessions")}
+                  data-component="sidebar-nav-mobile"
+                  classList={{
+                    "@container fixed top-10 bottom-0 left-0 z-50 w-full max-w-[400px] overflow-hidden border-r border-border-weaker-base bg-background-base transition-transform duration-200 ease-out": true,
+                    "translate-x-0": layout.mobileSidebar.opened(),
+                    "-translate-x-full": !layout.mobileSidebar.opened(),
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {sidebarContent(true)}
+                </nav>
+              </div>
+            </Show>
 
             <div
               classList={{

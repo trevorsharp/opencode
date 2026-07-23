@@ -193,6 +193,8 @@ import type {
   SessionDeleteResponses,
   SessionDiffErrors,
   SessionDiffResponses,
+  SessionExternalTranscriptErrors,
+  SessionExternalTranscriptResponses,
   SessionForkErrors,
   SessionForkResponses,
   SessionGetErrors,
@@ -4417,6 +4419,76 @@ export class Session2 extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<SessionAgentCardResponses, SessionAgentCardErrors, ThrowOnError>({
       url: "/session/{sessionID}/agent-card",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Append external agent transcript
+   *
+   * Append a user prompt, assistant text, or completed tool call produced by an external agent without invoking an OpenCode model.
+   */
+  public externalTranscript<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      body?:
+        | {
+            providerID: string
+            modelID: string
+            claudeSessionID?: string
+            type: "user"
+            text: string
+          }
+        | {
+            providerID: string
+            modelID: string
+            claudeSessionID?: string
+            type: "text"
+            text: string
+          }
+        | {
+            providerID: string
+            modelID: string
+            claudeSessionID?: string
+            type: "tool"
+            callID: string
+            tool: string
+            input: {
+              [key: string]: unknown
+            }
+            output: string
+            error?: boolean
+          }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "body", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SessionExternalTranscriptResponses,
+      SessionExternalTranscriptErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/external-transcript",
       ...options,
       ...params,
       headers: {

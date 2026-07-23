@@ -35,6 +35,7 @@ export type ProjectSidebarContext = {
   canOpenPR: (directory: string) => boolean
   toggleProjectWorkspaces: (project: LocalProject) => void
   workspacesEnabled: (project: LocalProject) => boolean
+  projectPending: (directory: string) => boolean
   workspaceIds: (project: LocalProject) => string[]
   workspaceLabel: (directory: string, branch?: string, projectId?: string) => string
   sessionProps: Omit<SessionItemProps, "session" | "list" | "slug" | "mobile" | "dense">
@@ -343,6 +344,7 @@ export const SortableProject = (props: {
 
   const projectStore = createMemo(() => serverSync().child(props.project.worktree, { bootstrap: false })[0])
   const isWorking = createMemo(() => {
+    if (props.ctx.projectPending(props.project.worktree)) return true
     const data = serverSync().session.data
     const sessionIDs = new Set([...Object.keys(data.session_status), ...Object.keys(data.background_working)])
     return dirs().some((directory) => {

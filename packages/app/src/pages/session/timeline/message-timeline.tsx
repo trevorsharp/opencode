@@ -13,7 +13,7 @@ import {
 } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { Dynamic } from "solid-js/web"
-import { useNavigate } from "@solidjs/router"
+import { useLocation, useNavigate } from "@solidjs/router"
 import { useMutation } from "@tanstack/solid-query"
 import { createVirtualizer, defaultRangeExtractor, elementScroll, type VirtualItem } from "@tanstack/solid-virtual"
 import { Accordion } from "@opencode-ai/ui/accordion"
@@ -66,7 +66,13 @@ import { useServerSDK } from "@/context/server-sdk"
 import { usePlatform } from "@/context/platform"
 import { useSettings } from "@/context/settings"
 import { useTabs } from "@/context/tabs"
-import { legacySessionHref, requireServerKey, sessionHref } from "@/utils/session-route"
+import {
+  cancelPendingProjectNavigation,
+  legacyNewSessionHref,
+  legacySessionHref,
+  requireServerKey,
+  sessionHref,
+} from "@/utils/session-route"
 import { useSDK } from "@/context/sdk"
 import { useSync } from "@/context/sync"
 import { notifySessionTabsRemoved } from "@/components/titlebar-session-events"
@@ -260,6 +266,7 @@ export function MessageTimeline(props: {
 }) {
   let touchGesture: number | undefined
 
+  const location = useLocation()
   const navigate = useNavigate()
   const serverSDK = useServerSDK()
   const sdk = useSDK()
@@ -797,7 +804,8 @@ export function MessageTimeline(props: {
       tabs.newDraft({ server: requireServerKey(params.serverKey), directory: sdk().directory })
       return
     }
-    navigate(`/${params.dir}/session`)
+    cancelPendingProjectNavigation()
+    navigate(legacyNewSessionHref(sdk().directory, location.search))
   }
 
   const archiveSession = async (sessionID: string) => {

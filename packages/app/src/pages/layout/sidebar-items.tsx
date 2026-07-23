@@ -19,6 +19,7 @@ import { sessionTitle } from "@/utils/session-title"
 import { sessionPermissionRequest } from "../session/composer/session-request-tree"
 import { childSessionOnPath, getProjectAvatarSource, hasProjectPermissions } from "./helpers"
 import { pathKey } from "@/utils/path-key"
+import { cancelPendingProjectNavigation } from "@/utils/session-route"
 
 export const ProjectIcon = (props: {
   project: LocalProject
@@ -161,7 +162,7 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
   const serverSync = useServerSync()
   const unseenCount = createMemo(() => notification.session.unseenCount(props.session.id))
   const hasError = createMemo(() => notification.session.unseenHasError(props.session.id))
-  const [sessionStore] = serverSync().child(props.session.directory)
+  const [sessionStore] = serverSync().child(props.session.directory, { bootstrap: false })
   const hasPermissions = createMemo(() => {
     return !!sessionPermissionRequest(
       sessionStore.session,
@@ -314,6 +315,7 @@ export const NewSessionItem = (props: {
       end
       class={`flex items-center gap-2 min-w-0 w-full text-left focus:outline-none ${props.dense ? "py-0.5" : "py-1"}`}
       onClick={() => {
+        cancelPendingProjectNavigation()
         if (layout.sidebar.opened()) return
         props.clearHoverProjectSoon()
       }}
