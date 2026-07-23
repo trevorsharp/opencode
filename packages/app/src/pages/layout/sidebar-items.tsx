@@ -123,6 +123,7 @@ const SessionRow = (props: {
       onPointerDown={props.warmPress}
       onFocus={props.warmFocus}
       onClick={() => {
+        cancelPendingProjectNavigation()
         if (props.sidebarOpened()) return
         props.clearHoverProjectSoon()
       }}

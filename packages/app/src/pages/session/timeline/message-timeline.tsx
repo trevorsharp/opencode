@@ -791,7 +791,9 @@ export function MessageTimeline(props: {
   const navigateAfterSessionRemoval = (sessionID: string, parentID?: string, nextSessionID?: string) => {
     if (params.id !== sessionID) return
     const href = (id: string) =>
-      params.serverKey ? sessionHref(requireServerKey(params.serverKey), id) : legacySessionHref(sdk().directory, id)
+      params.serverKey
+        ? sessionHref(requireServerKey(params.serverKey), id)
+        : legacySessionHref(sdk().directory, id, location.search)
     if (parentID) {
       navigate(href(parentID))
       return
@@ -905,7 +907,9 @@ export function MessageTimeline(props: {
     const id = parentID()
     if (!id) return
     navigate(
-      params.serverKey ? sessionHref(requireServerKey(params.serverKey), id) : legacySessionHref(sdk().directory, id),
+      params.serverKey
+        ? sessionHref(requireServerKey(params.serverKey), id)
+        : legacySessionHref(sdk().directory, id, location.search),
     )
   }
 

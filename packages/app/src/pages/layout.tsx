@@ -1630,7 +1630,8 @@ export default function LegacyLayout(props: ParentProps) {
     if (!pageReady() || !layoutReady()) return
     const directory = currentDir()
     if (!directory) return
-    admitProject(rootParam() ?? directory)
+    const root = rootParam()
+    untrack(() => admitProject(root ?? directory))
   })
 
   function navigateToSession(session: Session | undefined) {
@@ -1750,11 +1751,8 @@ export default function LegacyLayout(props: ParentProps) {
 
     const next = list[index + 1] ?? list[index - 1]
 
-    navigateWithSidebarReset(sessionHref(next.worktree, undefined, next.worktree))
     layout.projects.close(directory)
-    queueMicrotask(() => {
-      void navigateToProject(next.worktree)
-    })
+    void navigateToProject(next.worktree)
   }
 
   function toggleProjectWorkspaces(project: LocalProject) {
@@ -1967,8 +1965,7 @@ export default function LegacyLayout(props: ParentProps) {
         {
           label: language.t("command.session.new"),
           onClick: () => {
-            navigate(sessionHref(directory, undefined, root))
-            layout.mobileSidebar.hide()
+            navigateToNewSession(directory, root)
           },
         },
         {

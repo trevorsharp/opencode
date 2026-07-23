@@ -1,4 +1,5 @@
 import { afterEach, describe, expect } from "bun:test"
+import { chmod, mkdir, rm } from "fs/promises"
 import path from "path"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -7,12 +8,14 @@ import { GlobalBus, type GlobalEvent } from "../../src/bus/global"
 import { Git } from "../../src/git"
 import { InstanceBootstrap } from "../../src/project/bootstrap"
 import { InstanceStore } from "../../src/project/instance-store"
+import { Project } from "../../src/project/project"
+import { InstanceState } from "../../src/effect/instance-state"
 import { Worktree } from "../../src/worktree"
 import { disposeAllInstances, provideInstance, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(
-  LayerNode.compile(LayerNode.group([Worktree.node, FSUtil.node, Git.node]), [
+  LayerNode.compile(LayerNode.group([Worktree.node, FSUtil.node, Git.node, Project.node]), [
     [InstanceStore.bootstrapNode, InstanceBootstrap.node],
   ]),
 )
@@ -75,6 +78,21 @@ const git = Effect.fn("WorktreeTest.git")(function* (cwd: string, args: string[]
 const gitResult = Effect.fn("WorktreeTest.gitResult")(function* (cwd: string, args: string[]) {
   const service = yield* Git.Service
   return yield* service.run(args, { cwd })
+})
+
+const installWorkspaceShim = Effect.fnUntraced(function* (root: string, script: string) {
+  const bin = path.join(root, "workspace-bin")
+  const executable = path.join(bin, "workspace")
+  yield* Effect.promise(() => mkdir(bin, { recursive: true }))
+  yield* Effect.promise(() => Bun.write(executable, script))
+  yield* Effect.promise(() => chmod(executable, 0o755))
+  const previous = process.env.PATH ?? ""
+  process.env.PATH = `${bin}${path.delimiter}${previous}`
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      process.env.PATH = previous
+    }),
+  )
 })
 
 describe("Worktree", () => {
@@ -238,6 +256,101 @@ describe("Worktree", () => {
             expect(info.branch).toBe("opencode/test-workspace")
           }),
         ),
+      { git: true },
+    )
+  })
+
+  describe("workspace memberships", () => {
+    it.instance(
+      "scopes, deduplicates, and persists memberships",
+      () =>
+        Effect.gen(function* () {
+          const root = (yield* TestInstance).directory
+          const workspaceRoot = path.join(path.dirname(root), `${path.basename(root)}-workspace`)
+          const member = path.join(workspaceRoot, "member")
+          const foreign = path.join(workspaceRoot, "foreign")
+          const foreignSource = path.join(path.dirname(root), `${path.basename(root)}-foreign`)
+          const mutation = path.join(root, "workspace-mutation")
+          yield* Effect.promise(() => mkdir(workspaceRoot, { recursive: true }))
+          yield* Effect.promise(() => mkdir(foreign, { recursive: true }))
+          yield* Effect.promise(() => mkdir(foreignSource, { recursive: true }))
+          yield* Effect.addFinalizer(() =>
+            Effect.promise(() =>
+              Promise.all([
+                rm(workspaceRoot, { recursive: true, force: true }),
+                rm(foreignSource, { recursive: true, force: true }),
+              ]).then(() => undefined),
+            ),
+          )
+          yield* git(root, ["worktree", "add", "--detach", member])
+          yield* Effect.addFinalizer(() =>
+            gitResult(root, ["worktree", "remove", "--force", member]).pipe(Effect.ignore),
+          )
+          yield* installWorkspaceShim(
+            root,
+            [
+              "#!/bin/bash",
+              'if [ "$1" = "list" ]; then',
+              `  printf '%s' ${JSON.stringify(
+                JSON.stringify([
+                  {
+                    name: "shared",
+                    path: workspaceRoot,
+                    folders: [
+                      { folder: "member", source: root, branch: "member-branch" },
+                      { folder: "foreign", source: foreignSource, branch: "foreign-branch" },
+                    ],
+                  },
+                ]),
+              )}`,
+              "  exit 0",
+              "fi",
+              'if [ "$1" = "rm" ] || [ "$1" = "rename" ]; then',
+              `  touch ${JSON.stringify(mutation)}`,
+              "  exit 0",
+              "fi",
+              "exit 1",
+            ].join("\n"),
+          )
+
+          const svc = yield* Worktree.Service
+          const entries = yield* svc.list()
+          expect(entries.filter((entry) => entry.directory === member)).toEqual([
+            expect.objectContaining({ description: "shared", branch: "member-branch" }),
+          ])
+          expect(entries.some((entry) => entry.directory === foreign)).toBe(false)
+
+          const project = yield* Project.Service
+          const ctx = yield* InstanceState.context
+          expect((yield* project.get(ctx.project.id))?.sandboxes).toContain(member)
+
+          const removeExit = yield* Effect.exit(svc.removeDetailed({ directory: foreign, workspaceOnly: true }))
+          expect(Exit.isFailure(removeExit)).toBe(true)
+          if (Exit.isFailure(removeExit))
+            expect(Cause.squash(removeExit.cause)).toBeInstanceOf(Worktree.RemoveFailedError)
+          const renameExit = yield* Effect.exit(svc.rename({ directory: foreign, name: "renamed" }))
+          expect(Exit.isFailure(renameExit)).toBe(true)
+          if (Exit.isFailure(renameExit))
+            expect(Cause.squash(renameExit.cause)).toBeInstanceOf(Worktree.RenameFailedError)
+          const resetExit = yield* Effect.exit(svc.reset({ directory: foreign }))
+          expect(Exit.isFailure(resetExit)).toBe(true)
+          if (Exit.isFailure(resetExit)) expect(Cause.squash(resetExit.cause)).toBeInstanceOf(Worktree.ResetFailedError)
+          expect(yield* Effect.promise(() => Bun.file(mutation).exists())).toBe(false)
+        }),
+      { git: true },
+    )
+
+    it.instance(
+      "reports rename failure when the workspace CLI fails",
+      () =>
+        Effect.gen(function* () {
+          const root = (yield* TestInstance).directory
+          yield* installWorkspaceShim(root, "#!/bin/bash\nexit 1\n")
+          const svc = yield* Worktree.Service
+          const exit = yield* Effect.exit(svc.rename({ directory: path.join(root, "missing"), name: "renamed" }))
+          expect(Exit.isFailure(exit)).toBe(true)
+          if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(Worktree.RenameFailedError)
+        }),
       { git: true },
     )
   })

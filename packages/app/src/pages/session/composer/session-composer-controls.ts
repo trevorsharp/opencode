@@ -16,6 +16,7 @@ import { useSync } from "@/context/sync"
 import { useTabs } from "@/context/tabs"
 import { useProviders } from "@/hooks/use-providers"
 import { pathKey } from "@/utils/path-key"
+import { cancelPendingProjectNavigation } from "@/utils/session-route"
 
 export function createPromptInputController(input: {
   sessionKey: Accessor<string>
@@ -93,6 +94,7 @@ export function createPromptProjectControls() {
     if (!serverKey) {
       layout.projects.open(worktree)
       server.projects.touch(worktree)
+      cancelPendingProjectNavigation()
       navigate(`/${base64Encode(worktree)}/session`)
       return
     }
@@ -102,6 +104,7 @@ export function createPromptProjectControls() {
     target.projects.open(worktree)
     target.projects.touch(worktree)
     server.setActive(ServerConnection.key(conn))
+    cancelPendingProjectNavigation()
     navigate(`/${base64Encode(worktree)}/session`)
   }
 

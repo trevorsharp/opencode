@@ -2202,7 +2202,7 @@ export default function Page() {
               navigate(
                 params.serverKey
                   ? sessionHref(requireServerKey(params.serverKey), id)
-                  : legacySessionHref(sdk().directory, id),
+                  : legacySessionHref(sdk().directory, id, location.search),
               )
             },
             setPromptRef: (el) => {

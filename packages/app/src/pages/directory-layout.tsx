@@ -10,7 +10,7 @@ import { useSync } from "@/context/sync"
 import { decode64 } from "@/utils/base64"
 import { Schema } from "effect"
 import type { ServerConnection } from "@/context/server"
-import { sessionHref } from "@/utils/session-route"
+import { legacySessionHref, sessionHref } from "@/utils/session-route"
 import { useServerSync } from "@/context/server-sync"
 import { useServerSDK } from "@/context/server-sdk"
 
@@ -32,7 +32,7 @@ export function DirectoryDataProvider(
   const href = (sessionID: string) => {
     const server = props.server?.()
     if (server) return sessionHref(server, sessionID)
-    return `/${slug()}/session/${sessionID}`
+    return legacySessionHref(directory(), sessionID, location.search)
   }
 
   const requestCardCancellation = (input: {

@@ -397,6 +397,11 @@ const layer: Layer.Layer<
       ).pipe(Effect.map((items) => items.filter((item) => item !== undefined)))
     })
 
+    const allWorkspaceEntries = Effect.fnUntraced(function* () {
+      const workspaces = yield* listWorkspaces
+      return yield* Effect.forEach(workspaces, workspaceEntries).pipe(Effect.map((items) => items.flat()))
+    })
+
     const workspaceFolderInfo = Effect.fnUntraced(function* (
       name: string,
       input?: { branch?: string; exclude?: string[] },
@@ -613,6 +618,12 @@ const layer: Layer.Layer<
       )
       const match = data.find((item) => item !== undefined)
       const entries = match ? yield* workspaceEntries(match) : []
+      yield* syncSandboxes(entries)
+      return entries
+    })
+
+    const syncSandboxes = Effect.fnUntraced(function* (entries: readonly { directory: string }[]) {
+      const ctx = yield* InstanceState.context
       const current = yield* project.get(ctx.project.id)
       const directories = new Set(entries.map((entry) => entry.directory))
       yield* Effect.forEach(entries, (entry) =>
@@ -623,21 +634,40 @@ const layer: Layer.Layer<
       yield* Effect.forEach(current?.sandboxes ?? [], (directory) =>
         directories.has(directory) ? Effect.void : project.removeSandbox(ctx.project.id, directory),
       )
-      return entries
     })
 
     const list = Effect.fn("Worktree.list")(function* () {
       const ctx = yield* InstanceState.context
-      if (!ctx.project.id.startsWith("feature:")) return yield* listGitWorktrees()
-      return yield* workspaceInventory()
+      if (ctx.project.id.startsWith("feature:")) return yield* workspaceInventory()
+
+      const worktrees = yield* listGitWorktrees()
+      if (ctx.project.vcs !== "git") return worktrees
+      const source = yield* canonical(ctx.project.worktree)
+      const entries = yield* allWorkspaceEntries().pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("workspace membership listing failed", { projectID: ctx.project.id, cause }).pipe(
+            Effect.as(undefined),
+          ),
+        ),
+      )
+      const memberships = entries?.filter((entry) => entry.source === source) ?? []
+      const result = [...memberships, ...worktrees].filter(
+        (entry, index, items) => items.findIndex((item) => item.directory === entry.directory) === index,
+      )
+      if (entries) yield* syncSandboxes(result)
+      return result
     })
 
     const workspaceFolder = Effect.fnUntraced(function* (directory: string) {
       const ctx = yield* InstanceState.context
-      if (!ctx.project.id.startsWith("feature:")) return undefined
       const target = yield* canonical(directory)
-      const entries = yield* workspaceInventory()
-      return entries.find((entry) => entry.directory === target)
+      if (ctx.project.id.startsWith("feature:")) {
+        const entries = yield* workspaceInventory()
+        return entries.find((entry) => entry.directory === target)
+      }
+      const source = yield* canonical(ctx.project.worktree)
+      const entries = yield* allWorkspaceEntries()
+      return entries.find((entry) => entry.directory === target && entry.source === source)
     })
 
     const workspacePathForDirectory = Effect.fnUntraced(function* (directory: string) {
@@ -654,7 +684,9 @@ const layer: Layer.Layer<
       const name = input.name.trim()
       if (!name) return yield* new RenameFailedError({ message: "Workspace name is required" })
 
-      const workspacePath = yield* workspacePathForDirectory(input.directory)
+      const workspacePath = yield* workspacePathForDirectory(input.directory).pipe(
+        Effect.catch(() => Effect.succeed(undefined)),
+      )
       if (!workspacePath) return yield* new RenameFailedError({ message: "Workspace folder not found" })
 
       const renamed = yield* mutateWorkspace(["rename", name, "--workspace", workspacePath], { cwd: workspacePath })

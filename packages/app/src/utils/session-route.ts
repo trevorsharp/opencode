@@ -12,8 +12,10 @@ export function sessionHref(server: ServerConnection.Key, sessionID: string) {
   return `/server/${base64Encode(server)}/session/${sessionID}`
 }
 
-export function legacySessionHref(directory: string, sessionID: string) {
-  return `/${base64Encode(directory)}/session/${sessionID}`
+export function legacySessionHref(directory: string, sessionID: string, search?: string) {
+  const root = new URLSearchParams(search).get("root")
+  const query = root ? `?root=${encodeURIComponent(root)}` : ""
+  return `/${base64Encode(directory)}/session/${sessionID}${query}`
 }
 
 export function legacyNewSessionHref(directory: string, search: string) {

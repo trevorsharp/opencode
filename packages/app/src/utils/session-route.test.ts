@@ -44,6 +44,12 @@ describe("session routes", () => {
     )
   })
 
+  test("preserves the project root on legacy session navigation", () => {
+    expect(legacySessionHref("/Users/example/worktree", "session-1", "?root=L1VzZXJzL2V4YW1wbGUvcHJvamVjdA")).toBe(
+      "/L1VzZXJzL2V4YW1wbGUvd29ya3RyZWU/session/session-1?root=L1VzZXJzL2V4YW1wbGUvcHJvamVjdA",
+    )
+  })
+
   test("resolves the root session", async () => {
     const sessions: Record<string, { id: string; parentID?: string }> = {
       child: { id: "child", parentID: "parent" },
