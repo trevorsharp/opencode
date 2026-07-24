@@ -324,6 +324,9 @@ export function GenericTool(props: {
   status?: string
   hideDetails?: boolean
   input?: Record<string, unknown>
+  defaultOpen?: boolean
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
 }) {
   const i18n = useI18n()
 
@@ -337,6 +340,23 @@ export function GenericTool(props: {
         args: args(props.input),
       }}
       hideDetails={props.hideDetails}
-    />
+      defaultOpen={props.defaultOpen}
+      open={props.open}
+      onOpenChange={props.onOpenChange}
+    >
+      <div data-component="tool-arguments">
+        <div
+          data-slot="tool-arguments-scroll"
+          data-scrollable
+          tabIndex={0}
+          role="region"
+          aria-label={i18n.t("ui.scrollView.ariaLabel")}
+        >
+          <pre data-slot="tool-arguments-pre">
+            <code>{JSON.stringify(props.input ?? {}, null, 2)}</code>
+          </pre>
+        </div>
+      </div>
+    </BasicTool>
   )
 }

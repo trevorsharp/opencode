@@ -367,7 +367,8 @@ html[data-theme="trs"] [data-component="user-message"] [data-slot="user-message-
   }
 }
 
-[data-component="bash-output"] {
+[data-component="bash-output"],
+[data-component="tool-arguments"] {
   width: 100%;
   border: 0.5px solid var(--v2-border-border-base);
   border-radius: 6px;
@@ -390,7 +391,8 @@ html[data-theme="trs"] [data-component="user-message"] [data-slot="user-message-
     pointer-events: auto;
   }
 
-  [data-slot="bash-scroll"] {
+  [data-slot="bash-scroll"],
+  [data-slot="tool-arguments-scroll"] {
     width: 100%;
     overflow-y: auto;
     overflow-x: hidden;
@@ -402,12 +404,14 @@ html[data-theme="trs"] [data-component="user-message"] [data-slot="user-message-
     }
   }
 
-  [data-slot="bash-pre"] {
+  [data-slot="bash-pre"],
+  [data-slot="tool-arguments-pre"] {
     margin: 0;
     padding: 12px;
   }
 
-  [data-slot="bash-pre"] code {
+  [data-slot="bash-pre"] code,
+  [data-slot="tool-arguments-pre"] code {
     font-family: var(--font-family-mono);
     font-feature-settings: var(--font-family-mono--font-feature-settings);
     font-size: 13px;
@@ -704,6 +708,7 @@ html[data-theme="trs"] [data-component="user-message"] [data-slot="user-message-
 [data-component="reasoning-part"],
 [data-component="tool-output"],
 [data-component="bash-output"],
+[data-component="tool-arguments"],
 [data-component="edit-content"],
 [data-component="write-content"],
 [data-component="todos"],
@@ -1428,7 +1433,8 @@ body:not([data-new-layout]) {
     }
   }
 
-  [data-component="bash-output"] {
+  [data-component="bash-output"],
+  [data-component="tool-arguments"] {
     border: 1px solid var(--border-weak-base);
   }
 
