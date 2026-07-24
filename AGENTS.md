@@ -1,7 +1,7 @@
 ## OpenCode Fork
 
 - This repository is a fork of upstream opencode. Keep fork-specific changes small, intentional, and easy to rebase onto `origin/dev`.
-- When asked to rebuild the package or build, run `./packages/opencode/script/build.ts --single` from the repository root.
+- For this fork, run `./packages/opencode/script/build.ts --single` from the repository root after every code change to rebuild the package.
 
 ## Remaining AGENTS.md
 
