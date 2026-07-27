@@ -2161,7 +2161,10 @@ function WorkflowAgentRow(props: { row: any; onOpen: () => void }) {
     const modelID = suffix?.[1] ?? rawModel
     const variant = typeof props.row.variant === "string" && props.row.variant ? props.row.variant : suffix?.[2]
     const provider = data.store.provider?.all?.get(providerID)
-    const name = provider?.models?.[modelID]?.name ?? modelDisplayName(providerID, modelID)
+    const name =
+      (typeof props.row?.modelName === "string" && props.row.modelName) ||
+      provider?.models?.[modelID]?.name ||
+      modelDisplayName(providerID, modelID)
     return variant ? `${name} (${variant[0]?.toUpperCase()}${variant.slice(1)})` : name
   })
   return (
