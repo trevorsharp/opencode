@@ -96,6 +96,9 @@ const externalTranscriptBase = {
   providerID: ProviderV2.ID,
   modelID: ModelV2.ID,
   claudeSessionID: Schema.optional(Schema.String),
+  // Groups entries into one assistant turn; falls back to claudeSessionID so a
+  // single external run per session keeps working without it.
+  runID: Schema.optional(Schema.String),
 }
 export const ExternalTranscriptPayload = Schema.Union([
   Schema.Struct({
@@ -110,14 +113,49 @@ export const ExternalTranscriptPayload = Schema.Union([
   }),
   Schema.Struct({
     ...externalTranscriptBase,
+    type: Schema.Literal("reasoning"),
+    text: Schema.String,
+  }),
+  Schema.Struct({
+    ...externalTranscriptBase,
     type: Schema.Literal("tool"),
     callID: Schema.String,
     tool: Schema.String,
     input: Schema.Record(Schema.String, Schema.Any),
-    output: Schema.String,
+    status: Schema.optional(Schema.Literals(["running", "completed", "error"])),
+    title: Schema.optional(Schema.String),
+    output: Schema.optional(Schema.String),
     error: Schema.optional(Schema.Boolean),
   }),
+  Schema.Struct({
+    ...externalTranscriptBase,
+    type: Schema.Literal("finish"),
+    finish: Schema.optional(Schema.String),
+    aborted: Schema.optional(Schema.Boolean),
+    error: Schema.optional(Schema.String),
+    cost: Schema.optional(Schema.Finite),
+    tokens: Schema.optional(
+      Schema.Struct({
+        input: Schema.Finite,
+        output: Schema.Finite,
+        reasoning: Schema.optional(Schema.Finite),
+        cache: Schema.optional(
+          Schema.Struct({
+            read: Schema.Finite,
+            write: Schema.Finite,
+          }),
+        ),
+      }),
+    ),
+  }),
 ])
+export const ExternalTranscriptResult = Schema.Struct({
+  messageID: MessageID,
+  partID: Schema.optional(PartID),
+  // Set once the turn was settled server-side (session abort or shutdown); the caller
+  // must stop its agent, since further entries for the run are ignored.
+  aborted: Schema.optional(Schema.Boolean),
+})
 
 export const SessionPaths = {
   list: root,
@@ -506,14 +544,14 @@ export const SessionApi = HttpApi.make("session")
           params: { sessionID: SessionID },
           query: WorkspaceRoutingQuery,
           payload: ExternalTranscriptPayload,
-          success: described(AgentCardResult, "Successfully appended external transcript entry"),
+          success: described(ExternalTranscriptResult, "Successfully appended external transcript entry"),
           error: [HttpApiError.BadRequest, ApiNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.externalTranscript",
             summary: "Append external agent transcript",
             description:
-              "Append a user prompt, assistant text, or completed tool call produced by an external agent without invoking an OpenCode model.",
+              "Append a user prompt, assistant text, reasoning, tool call, or turn settlement produced by an external agent without invoking an OpenCode model. Entries sharing a runID accumulate into one assistant message that stays active until a finish entry arrives; entries without a runID settle their assistant message on arrival, matching the pre-runID contract.",
           }),
         ),
       )

@@ -41,6 +41,20 @@ import {
 import { PermissionNotFoundError } from "../errors"
 import * as SessionError from "./session-errors"
 
+type ExternalTranscriptRun = {
+  messageID: MessageID
+  toolParts: Map<string, { partID: PartID; start: number }>
+  deadline: number
+  // Clients predating runID cannot send a finish entry, so their entries settle on arrival.
+  legacy: boolean
+  aborted: boolean
+}
+
+const externalTranscriptAbort = (message: string): NonNullable<SessionV1.Assistant["error"]> => ({
+  name: "MessageAbortedError",
+  data: { message },
+})
+
 const tryParseJson = (text: string) =>
   Effect.try({
     try: () => JSON.parse(text) as unknown,
@@ -62,26 +76,198 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const summary = yield* SessionSummary.Service
     const events = yield* EventV2Bridge.Service
     const scope = yield* Scope.Scope
-    const externalTranscriptRuns = new Map<SessionID, Map<string, object>>()
+    const externalTranscriptRuns = new Map<SessionID, Map<string, ExternalTranscriptRun>>()
 
-    const finishExternalTranscriptRun = Effect.fnUntraced(function* (
+    // An external run stays busy until its finish entry arrives, so a plugin that dies
+    // mid-run is reclaimed by this inactivity deadline instead of leaving the session busy.
+    const externalTranscriptIdle = 5 * 60 * 1000
+
+    const settleExternalTranscriptMessage = Effect.fnUntraced(function* (
       sessionID: SessionID,
-      key: string,
-      token?: object,
+      run: ExternalTranscriptRun,
+      settlement: {
+        finish?: string
+        error?: SessionV1.Assistant["error"]
+        cost?: number
+        tokens?: SessionV1.Assistant["tokens"]
+      },
     ) {
+      const messageID = run.messageID
+      const found = yield* session
+        .findMessage(sessionID, (message) => message.info.id === messageID)
+        .pipe(Effect.catch(() => Effect.succeed(Option.none<SessionV1.WithParts>())))
+      if (Option.isNone(found)) return
+      const info = found.value.info
+      if (info.role !== "assistant" || typeof info.time.completed === "number") return
+      // Tool calls the external agent never reported back on would keep spinning forever.
+      for (const [callID, tracked] of run.toolParts) {
+        const part = yield* session.getPart({ sessionID, messageID, partID: tracked.partID })
+        run.toolParts.delete(callID)
+        if (part?.type !== "tool" || part.state.status !== "running") continue
+        yield* session.updatePart({
+          ...part,
+          state: {
+            status: "error" as const,
+            input: part.state.input,
+            error:
+              settlement.error && "message" in settlement.error.data
+                ? settlement.error.data.message
+                : "external tool call did not report a result",
+            metadata: part.state.metadata,
+            time: { start: part.state.time.start, end: Date.now() },
+          },
+        })
+      }
+      yield* session.updateMessage({
+        ...info,
+        finish: settlement.finish ?? info.finish,
+        error: settlement.error,
+        cost: settlement.cost ?? info.cost,
+        tokens: settlement.tokens ?? info.tokens,
+        time: { ...info.time, completed: Date.now() },
+      })
+    })
+
+    // Aborted runs stay in the map as tombstones until their finish entry or watchdog fires,
+    // so late entries are ignored instead of reopening a settled turn.
+    const idleExternalTranscriptSession = Effect.fnUntraced(function* (sessionID: SessionID) {
       const runs = externalTranscriptRuns.get(sessionID)
-      if (token && runs?.get(key) !== token) return
-      const run = runs?.get(key)
-      runs?.delete(key)
-      if (run) yield* statusSvc.release(sessionID, run)
-      if (runs?.size) return
-      externalTranscriptRuns.delete(sessionID)
+      if (runs && [...runs.values()].some((run) => !run.aborted)) return
+      if (!runs?.size) externalTranscriptRuns.delete(sessionID)
       const nativeIdle = yield* runState.assertNotBusy(sessionID).pipe(
         Effect.as(true),
         Effect.catch(() => Effect.succeed(false)),
       )
       if (!nativeIdle) return
       yield* statusSvc.set(sessionID, { type: "idle" })
+    })
+
+    const finishExternalTranscriptRun = Effect.fnUntraced(function* (
+      sessionID: SessionID,
+      key: string,
+      token?: ExternalTranscriptRun,
+    ) {
+      const runs = externalTranscriptRuns.get(sessionID)
+      const run = runs?.get(key)
+      if (!run || (token && run !== token)) return
+      runs?.delete(key)
+      yield* settleExternalTranscriptMessage(sessionID, run, {
+        finish: "aborted",
+        error: externalTranscriptAbort("external agent stopped reporting"),
+      })
+      yield* statusSvc.release(sessionID, run)
+      yield* idleExternalTranscriptSession(sessionID)
+    })
+
+    // Owns cancellation for external runs the way SessionRunState owns it for native ones:
+    // the turn is settled and the session goes idle even though no runner exists here.
+    const abortExternalTranscriptRuns = Effect.fnUntraced(function* (sessionID: SessionID, message: string) {
+      const runs = externalTranscriptRuns.get(sessionID)
+      if (!runs?.size) return
+      for (const run of runs.values()) {
+        if (run.aborted) continue
+        run.aborted = true
+        yield* settleExternalTranscriptMessage(sessionID, run, {
+          finish: "aborted",
+          error: externalTranscriptAbort(message),
+        })
+        yield* statusSvc.release(sessionID, run)
+      }
+      yield* idleExternalTranscriptSession(sessionID)
+    })
+
+    // The run map and its watchdogs are process-local, so anything still open when the
+    // instance scope closes has to be settled here or it stays active forever.
+    yield* Effect.addFinalizer(() =>
+      Effect.forEach(
+        [...externalTranscriptRuns.keys()],
+        (sessionID) => abortExternalTranscriptRuns(sessionID, "server stopped"),
+        { concurrency: "unbounded", discard: true },
+      ).pipe(Effect.ignore),
+    )
+
+    const registerExternalTranscriptRun = Effect.fnUntraced(function* (
+      sessionID: SessionID,
+      key: string,
+      messageID: MessageID,
+      legacy: boolean,
+    ) {
+      const run: ExternalTranscriptRun = {
+        messageID,
+        toolParts: new Map(),
+        deadline: Date.now() + externalTranscriptIdle,
+        legacy,
+        aborted: false,
+      }
+      const runs = externalTranscriptRuns.get(sessionID) ?? new Map<string, ExternalTranscriptRun>()
+      const previous = runs.get(key)
+      runs.set(key, run)
+      externalTranscriptRuns.set(sessionID, runs)
+      yield* statusSvc.hold(sessionID, run)
+      if (previous) {
+        yield* settleExternalTranscriptMessage(sessionID, previous, {
+          finish: "aborted",
+          error: externalTranscriptAbort("replaced by a new external run"),
+        })
+        yield* statusSvc.release(sessionID, previous)
+      }
+      yield* Effect.gen(function* () {
+        while (Date.now() < run.deadline) yield* Effect.sleep(run.deadline - Date.now())
+        yield* finishExternalTranscriptRun(sessionID, key, run)
+      }).pipe(Effect.forkIn(scope))
+      return run
+    })
+
+    const startExternalTranscriptRun = Effect.fnUntraced(function* (
+      sessionID: SessionID,
+      key: string,
+      payload: typeof ExternalTranscriptPayload.Type,
+      parentID: MessageID,
+    ) {
+      const instanceCtx = yield* InstanceState.context
+      // Native prompts persist the assistant message before streaming; do the same so an
+      // abort or failure before the first output still lands on a real message.
+      const message = yield* session.updateMessage({
+        id: MessageID.ascending(),
+        role: "assistant" as const,
+        parentID,
+        sessionID,
+        mode: "claude-cli",
+        agent: "claude-cli",
+        path: { cwd: instanceCtx.directory, root: instanceCtx.worktree },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: payload.modelID,
+        providerID: payload.providerID,
+        time: { created: Date.now() },
+      })
+      return yield* registerExternalTranscriptRun(sessionID, key, message.id, payload.runID === undefined)
+    })
+
+    // Entries can arrive without a live run when the server restarted mid-turn; continue the
+    // external assistant message left open then, or anchor a new turn to the last user entry.
+    const resumeExternalTranscriptRun = Effect.fnUntraced(function* (
+      sessionID: SessionID,
+      key: string,
+      payload: typeof ExternalTranscriptPayload.Type,
+    ) {
+      const anchor = yield* SessionError.mapStorageNotFound(
+        session.findMessage(
+          sessionID,
+          (message) =>
+            message.info.role === "user" ||
+            (message.info.role === "assistant" &&
+              message.info.agent === "claude-cli" &&
+              message.info.time.completed === undefined),
+        ),
+      )
+      if (Option.isNone(anchor)) return yield* new HttpApiError.BadRequest({})
+      const info = anchor.value.info
+      if (info.role === "assistant")
+        return yield* registerExternalTranscriptRun(sessionID, key, info.id, payload.runID === undefined)
+      // Nothing is open, so a settlement has nothing to settle.
+      if (payload.type === "finish") return yield* new HttpApiError.BadRequest({})
+      return yield* startExternalTranscriptRun(sessionID, key, payload, info.id)
     })
 
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
@@ -253,6 +439,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const abort = Effect.fn("SessionHttpApi.abort")(function* (ctx: { params: { sessionID: SessionID } }) {
+      yield* abortExternalTranscriptRuns(ctx.params.sessionID, "Aborted")
       yield* promptSvc.cancel(ctx.params.sessionID)
       return true
     })
@@ -565,7 +752,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         external: true,
         ...(payload.claudeSessionID ? { claudeSessionID: payload.claudeSessionID } : {}),
       }
-      const runKey = payload.claudeSessionID ?? "default"
+      const runKey = payload.runID ?? payload.claudeSessionID ?? "default"
 
       if (payload.type === "user") {
         const message = yield* session.updateMessage({
@@ -584,80 +771,110 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           text: payload.text,
           metadata,
         })
-        const run = {}
-        const runs = externalTranscriptRuns.get(sessionID) ?? new Map<string, object>()
-        const previous = runs.get(runKey)
-        runs.set(runKey, run)
-        externalTranscriptRuns.set(sessionID, runs)
-        yield* statusSvc.hold(sessionID, run)
-        if (previous) yield* statusSvc.release(sessionID, previous)
+        yield* startExternalTranscriptRun(sessionID, runKey, payload, message.id)
         yield* session.touch(sessionID)
-        yield* Effect.gen(function* () {
-          yield* Effect.sleep("1 minute")
-          yield* finishExternalTranscriptRun(sessionID, runKey, run)
-        }).pipe(Effect.forkIn(scope))
         return { messageID: message.id, partID: part.id }
       }
 
-      const lastUser = yield* SessionError.mapStorageNotFound(
-        session.findMessage(sessionID, (message) => message.info.role === "user"),
-      )
-      if (Option.isNone(lastUser)) return yield* new HttpApiError.BadRequest({})
-      const instanceCtx = yield* InstanceState.context
-      const message = yield* session.updateMessage({
-        id: MessageID.ascending(),
-        role: "assistant" as const,
-        parentID: lastUser.value.info.id,
+      if (payload.type === "finish") {
+        const run =
+          externalTranscriptRuns.get(sessionID)?.get(runKey) ??
+          (yield* resumeExternalTranscriptRun(sessionID, runKey, payload))
+        if (!run.aborted)
+          yield* settleExternalTranscriptMessage(sessionID, run, {
+            finish: payload.aborted ? "aborted" : payload.error ? "error" : (payload.finish ?? "stop"),
+            error: payload.aborted
+              ? externalTranscriptAbort(payload.error ?? "aborted")
+              : payload.error
+                ? { name: "UnknownError" as const, data: { message: payload.error } }
+                : undefined,
+            cost: payload.cost,
+            tokens: payload.tokens
+              ? {
+                  input: payload.tokens.input,
+                  output: payload.tokens.output,
+                  reasoning: payload.tokens.reasoning ?? 0,
+                  cache: { read: payload.tokens.cache?.read ?? 0, write: payload.tokens.cache?.write ?? 0 },
+                }
+              : undefined,
+          })
+        yield* finishExternalTranscriptRun(sessionID, runKey, run)
+        yield* session.touch(sessionID)
+        return { messageID: run.messageID, ...(run.aborted ? { aborted: true } : {}) }
+      }
+
+      const run =
+        externalTranscriptRuns.get(sessionID)?.get(runKey) ??
+        (yield* resumeExternalTranscriptRun(sessionID, runKey, payload))
+      if (run.aborted) return { messageID: run.messageID, aborted: true }
+      run.deadline = now + externalTranscriptIdle
+      const messageID = run.messageID
+
+      if (payload.type === "text" || payload.type === "reasoning") {
+        const base = {
+          id: PartID.ascending(),
+          messageID,
+          sessionID,
+          text: payload.text,
+          time: { start: now, end: now },
+          metadata,
+        }
+        const part = yield* session.updatePart(
+          payload.type === "reasoning" ? { ...base, type: "reasoning" as const } : { ...base, type: "text" as const },
+        )
+        if (run.legacy) {
+          yield* settleExternalTranscriptMessage(sessionID, run, { finish: "tool-calls" })
+          yield* finishExternalTranscriptRun(sessionID, runKey, run)
+        }
+        yield* session.touch(sessionID)
+        return { messageID, partID: part.id }
+      }
+
+      const tracked = run.toolParts.get(payload.callID)
+      const start = tracked?.start ?? now
+      const partID = tracked?.partID ?? PartID.ascending()
+      const status = payload.error ? "error" : (payload.status ?? "completed")
+      const part = yield* session.updatePart({
+        id: partID,
+        messageID,
         sessionID,
-        mode: "claude-cli",
-        agent: "claude-cli",
-        path: { cwd: instanceCtx.directory, root: instanceCtx.worktree },
-        cost: 0,
-        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-        modelID: payload.modelID,
-        providerID: payload.providerID,
-        time: { created: now, completed: now },
-        finish: "tool-calls",
+        type: "tool" as const,
+        callID: payload.callID,
+        tool: payload.tool,
+        state:
+          status === "running"
+            ? {
+                status: "running" as const,
+                input: payload.input,
+                ...(payload.title ? { title: payload.title } : {}),
+                metadata,
+                time: { start },
+              }
+            : status === "error"
+              ? {
+                  status: "error" as const,
+                  input: payload.input,
+                  error: payload.output ?? "external tool call failed",
+                  metadata,
+                  time: { start, end: now },
+                }
+              : {
+                  status: "completed" as const,
+                  input: payload.input,
+                  output: payload.output ?? "",
+                  title: payload.title ?? payload.tool,
+                  metadata,
+                  time: { start, end: now },
+                },
       })
-      const part = yield* session.updatePart(
-        payload.type === "text"
-          ? {
-              id: PartID.ascending(),
-              messageID: message.id,
-              sessionID,
-              type: "text" as const,
-              text: payload.text,
-              time: { start: now, end: now },
-              metadata,
-            }
-          : {
-              id: PartID.ascending(),
-              messageID: message.id,
-              sessionID,
-              type: "tool" as const,
-              callID: payload.callID,
-              tool: payload.tool,
-              state: payload.error
-                ? {
-                    status: "error" as const,
-                    input: payload.input,
-                    error: payload.output,
-                    metadata,
-                    time: { start: now, end: now },
-                  }
-                : {
-                    status: "completed" as const,
-                    input: payload.input,
-                    output: payload.output,
-                    title: payload.tool,
-                    metadata,
-                    time: { start: now, end: now },
-                  },
-            },
-      )
-      yield* finishExternalTranscriptRun(sessionID, runKey)
+      if (status === "running") run.toolParts.set(payload.callID, { partID, start })
+      else run.toolParts.delete(payload.callID)
+      if (run.legacy && status !== "running") {
+        yield* settleExternalTranscriptMessage(sessionID, run, { finish: "tool-calls" })
+        yield* finishExternalTranscriptRun(sessionID, runKey, run)
+      }
       yield* session.touch(sessionID)
-      return { messageID: message.id, partID: part.id }
+      return { messageID, partID: part.id }
     })
 
     return handlers

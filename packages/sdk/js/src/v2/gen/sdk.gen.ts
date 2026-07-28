@@ -4432,7 +4432,7 @@ export class Session2 extends HeyApiClient {
   /**
    * Append external agent transcript
    *
-   * Append a user prompt, assistant text, or completed tool call produced by an external agent without invoking an OpenCode model.
+   * Append a user prompt, assistant text, reasoning, tool call, or turn settlement produced by an external agent without invoking an OpenCode model. Entries sharing a runID accumulate into one assistant message that stays active until a finish entry arrives; entries without a runID settle their assistant message on arrival, matching the pre-runID contract.
    */
   public externalTranscript<ThrowOnError extends boolean = false>(
     parameters: {
@@ -4444,6 +4444,7 @@ export class Session2 extends HeyApiClient {
             providerID: string
             modelID: string
             claudeSessionID?: string
+            runID?: string
             type: "user"
             text: string
           }
@@ -4451,6 +4452,7 @@ export class Session2 extends HeyApiClient {
             providerID: string
             modelID: string
             claudeSessionID?: string
+            runID?: string
             type: "text"
             text: string
           }
@@ -4458,14 +4460,45 @@ export class Session2 extends HeyApiClient {
             providerID: string
             modelID: string
             claudeSessionID?: string
+            runID?: string
+            type: "reasoning"
+            text: string
+          }
+        | {
+            providerID: string
+            modelID: string
+            claudeSessionID?: string
+            runID?: string
             type: "tool"
             callID: string
             tool: string
             input: {
               [key: string]: unknown
             }
-            output: string
+            status?: "running" | "completed" | "error"
+            title?: string
+            output?: string
             error?: boolean
+          }
+        | {
+            providerID: string
+            modelID: string
+            claudeSessionID?: string
+            runID?: string
+            type: "finish"
+            finish?: string
+            aborted?: boolean
+            error?: string
+            cost?: number
+            tokens?: {
+              input: number
+              output: number
+              reasoning?: number
+              cache?: {
+                read: number
+                write: number
+              }
+            }
           }
     },
     options?: Options<never, ThrowOnError>,

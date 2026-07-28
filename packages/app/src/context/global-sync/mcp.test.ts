@@ -12,9 +12,6 @@ describe("toggleMcp", () => {
       disconnect: async () => {
         calls.push("disconnect")
       },
-      authenticate: async () => {
-        calls.push("authenticate")
-      },
       refresh: async () => {
         calls.push("refresh")
       },
@@ -25,7 +22,7 @@ describe("toggleMcp", () => {
 
     calls.length = 0
     await toggleMcp(input("needs_auth"))
-    expect(calls).toEqual(["authenticate", "refresh"])
+    expect(calls).toEqual(["connect", "refresh"])
 
     calls.length = 0
     await toggleMcp(input("disabled"))

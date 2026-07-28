@@ -10575,6 +10575,7 @@ export type SessionExternalTranscriptData = {
         providerID: string
         modelID: string
         claudeSessionID?: string
+        runID?: string
         type: "user"
         text: string
       }
@@ -10582,6 +10583,7 @@ export type SessionExternalTranscriptData = {
         providerID: string
         modelID: string
         claudeSessionID?: string
+        runID?: string
         type: "text"
         text: string
       }
@@ -10589,14 +10591,45 @@ export type SessionExternalTranscriptData = {
         providerID: string
         modelID: string
         claudeSessionID?: string
+        runID?: string
+        type: "reasoning"
+        text: string
+      }
+    | {
+        providerID: string
+        modelID: string
+        claudeSessionID?: string
+        runID?: string
         type: "tool"
         callID: string
         tool: string
         input: {
           [key: string]: unknown
         }
-        output: string
+        status?: "running" | "completed" | "error"
+        title?: string
+        output?: string
         error?: boolean
+      }
+    | {
+        providerID: string
+        modelID: string
+        claudeSessionID?: string
+        runID?: string
+        type: "finish"
+        finish?: string
+        aborted?: boolean
+        error?: string
+        cost?: number
+        tokens?: {
+          input: number
+          output: number
+          reasoning?: number
+          cache?: {
+            read: number
+            write: number
+          }
+        }
       }
   path: {
     sessionID: string
@@ -10627,7 +10660,8 @@ export type SessionExternalTranscriptResponses = {
    */
   200: {
     messageID: string
-    partID: string
+    partID?: string
+    aborted?: boolean
   }
 }
 

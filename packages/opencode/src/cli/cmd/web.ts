@@ -3,6 +3,7 @@ import { UI } from "../ui"
 import { effectCmd } from "../effect-cmd"
 import { withNetworkOptions, resolveNetworkOptions } from "../network"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { base64Encode } from "@opencode-ai/core/util/encode"
 import open from "open"
 import { networkInterfaces } from "os"
 
@@ -42,13 +43,15 @@ export const WebCommand = effectCmd({
     }
     const opts = yield* resolveNetworkOptions(args)
     const server = yield* Effect.promise(() => Server.listen(opts))
+    const launchPath = `/${base64Encode(process.cwd())}/session`
+    const launchUrl = (origin: string | URL) => new URL(launchPath, origin).toString()
     UI.empty()
     UI.println(UI.logo("  "))
     UI.empty()
 
     if (opts.hostname === "0.0.0.0") {
       // Show localhost for local access
-      const localhostUrl = `http://localhost:${server.port}`
+      const localhostUrl = launchUrl(`http://localhost:${server.port}`)
       UI.println(UI.Style.TEXT_INFO_BOLD + "  Local access:      ", UI.Style.TEXT_NORMAL, localhostUrl)
 
       // Show network IPs for remote access
@@ -58,7 +61,7 @@ export const WebCommand = effectCmd({
           UI.println(
             UI.Style.TEXT_INFO_BOLD + "  Network access:    ",
             UI.Style.TEXT_NORMAL,
-            `http://${ip}:${server.port}`,
+            launchUrl(`http://${ip}:${server.port}`),
           )
         }
       }
@@ -74,7 +77,7 @@ export const WebCommand = effectCmd({
       // Open localhost in browser
       open(localhostUrl).catch(() => {})
     } else {
-      const displayUrl = server.url.toString()
+      const displayUrl = launchUrl(server.url)
       UI.println(UI.Style.TEXT_INFO_BOLD + "  Web interface:    ", UI.Style.TEXT_NORMAL, displayUrl)
       open(displayUrl).catch(() => {})
     }

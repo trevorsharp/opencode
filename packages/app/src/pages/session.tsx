@@ -144,10 +144,15 @@ async function runPromptRollbackMutation<T, R>(input: {
 }
 
 export function SessionPage() {
+  const params = useParams()
   return (
-    <SessionProviders>
-      <Page />
-    </SessionProviders>
+    <TerminalProvider>
+      <Show when={params.id ?? "new-session"} keyed>
+        <SessionProviders>
+          <Page />
+        </SessionProviders>
+      </Show>
+    </TerminalProvider>
   )
 }
 
@@ -278,9 +283,8 @@ function ResolvedTargetSessionRoute() {
   )
 }
 
-// Owns the workspace-identity remount. Must not include the session ID in the
-// key: SessionPage handles session changes reactively, and remounting here
-// destroys workspace-scoped state (terminal PTYs, file/prompt providers).
+// Owns the workspace-identity remount. SessionPage remounts session state while
+// preserving the workspace-scoped terminal across session changes.
 function TargetSessionPage() {
   const sdk = useSDK()
   const serverSDK = useServerSDK()
@@ -315,13 +319,11 @@ function MarkSessionNotificationsViewed(props: { sessionID?: () => string | unde
 
 function SessionProviders(props: ParentProps) {
   return (
-    <TerminalProvider>
-      <FileProvider>
-        <PromptProvider>
-          <CommentsProvider>{props.children}</CommentsProvider>
-        </PromptProvider>
-      </FileProvider>
-    </TerminalProvider>
+    <FileProvider>
+      <PromptProvider>
+        <CommentsProvider>{props.children}</CommentsProvider>
+      </PromptProvider>
+    </FileProvider>
   )
 }
 
