@@ -1,15 +1,13 @@
 import * as InstanceState from "@/effect/instance-state"
 import { Project } from "@/project/project"
 import { ProjectV2 } from "@opencode-ai/core/project"
-import { Process } from "@/util/process"
 import { Worktree } from "@/worktree"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
 import { ProjectNotFoundError } from "../errors"
-import { ProjectPullRequestError, ProjectRenameError } from "../groups/project"
+import { ProjectRenameError } from "../groups/project"
 import { markInstanceForReload } from "../lifecycle"
-import { errorMessage } from "@/util/error"
 
 export const projectHandlers = HttpApiBuilder.group(InstanceHttpApi, "project", (handlers) =>
   Effect.gen(function* () {
@@ -89,27 +87,6 @@ export const projectHandlers = HttpApiBuilder.group(InstanceHttpApi, "project", 
       return yield* save(ctx.params.projectID, ctx.payload)
     })
 
-    const openPullRequest = Effect.fn("ProjectHttpApi.openPullRequest")(function* () {
-      const ctx = yield* InstanceState.context
-      const result = yield* Effect.tryPromise({
-        try: () => Process.text(["pr", "--existing"], { cwd: ctx.directory, nothrow: true }),
-        catch: (error) => new ProjectPullRequestError({ message: errorMessage(error) }),
-      })
-      const output = `${result.text}\n${result.stderr.toString()}`.trim()
-
-      if (result.code === 0) {
-        const url = output
-          .split(/\s+/)
-          .map((value) => value.trim())
-          .find((value) => /^https?:\/\//.test(value))
-        if (url) return { status: "found" as const, url }
-        return yield* new ProjectPullRequestError({ message: "The pr script did not return a PR URL." })
-      }
-
-      if (/no\s+(existing|open)\s+(pull\s+request|pr)\s+found/i.test(output)) return { status: "missing" as const }
-      return yield* new ProjectPullRequestError({ message: output || "Failed to find an open PR." })
-    })
-
     const directories = Effect.fn("ProjectHttpApi.directories")((ctx: { params: { projectID: ProjectV2.ID } }) =>
       project.directories({ projectID: ctx.params.projectID }),
     )
@@ -118,7 +95,6 @@ export const projectHandlers = HttpApiBuilder.group(InstanceHttpApi, "project", 
       .handle("list", list)
       .handle("current", current)
       .handle("initGit", initGit)
-      .handle("openPullRequest", openPullRequest)
       .handle("update", update)
       .handle("directories", directories)
   }),

@@ -54,10 +54,8 @@ export type WorkspaceSidebarContext = {
   showResetWorkspaceDialog: (root: string, directory: string) => void
   showRemoveFromWorkspaceDialog: (root: string, directory: string) => void
   openRemoteVSCode: (directory: string) => void
-  openPullRequest: (directory: string) => void
   copyPath: (directory: string) => void
   canOpenRemoteVSCode: Accessor<boolean>
-  canOpenPR: (directory: string) => boolean
   setScrollContainerRef: (el: HTMLDivElement | undefined, mobile?: boolean) => void
 }
 
@@ -199,6 +197,9 @@ const WorkspaceActions = (props: {
           >
             <DropdownMenu.ItemLabel>{props.language.t("command.session.new")}</DropdownMenu.ItemLabel>
           </DropdownMenu.Item>
+          <DropdownMenu.Item onSelect={() => props.ctx.copyPath(props.directory)}>
+            <DropdownMenu.ItemLabel>{props.language.t("session.header.open.copyPath")}</DropdownMenu.ItemLabel>
+          </DropdownMenu.Item>
           <DropdownMenu.Separator />
           <DropdownMenu.Item
             onSelect={() => props.ctx.openRemoteVSCode(props.directory)}
@@ -209,14 +210,6 @@ const WorkspaceActions = (props: {
                 app: props.language.t("session.header.open.app.vscode"),
               })}
             </DropdownMenu.ItemLabel>
-          </DropdownMenu.Item>
-          <Show when={props.ctx.canOpenPR(props.directory)}>
-            <DropdownMenu.Item onSelect={() => props.ctx.openPullRequest(props.directory)}>
-              <DropdownMenu.ItemLabel>{props.language.t("session.header.openPR")}</DropdownMenu.ItemLabel>
-            </DropdownMenu.Item>
-          </Show>
-          <DropdownMenu.Item onSelect={() => props.ctx.copyPath(props.directory)}>
-            <DropdownMenu.ItemLabel>{props.language.t("session.header.open.copyPath")}</DropdownMenu.ItemLabel>
           </DropdownMenu.Item>
           <DropdownMenu.Separator />
           <DropdownMenu.Item

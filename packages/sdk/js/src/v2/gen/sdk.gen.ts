@@ -140,8 +140,6 @@ import type {
   ProjectInitGitResponses,
   ProjectListErrors,
   ProjectListResponses,
-  ProjectOpenPullRequestErrors,
-  ProjectOpenPullRequestResponses,
   ProjectUpdateErrors,
   ProjectUpdateResponses,
   PromptInput,
@@ -2619,40 +2617,6 @@ export class Project extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<ProjectInitGitResponses, ProjectInitGitErrors, ThrowOnError>({
       url: "/project/git/init",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Find open pull request
-   *
-   * Find an existing pull request for the current branch using the configured pr script.
-   */
-  public openPullRequest<ThrowOnError extends boolean = false>(
-    parameters?: {
-      directory?: string
-      workspace?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      ProjectOpenPullRequestResponses,
-      ProjectOpenPullRequestErrors,
-      ThrowOnError
-    >({
-      url: "/project/pr/open",
       ...options,
       ...params,
     })

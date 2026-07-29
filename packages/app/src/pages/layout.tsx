@@ -50,7 +50,6 @@ import { setNavigate } from "@/utils/notification-click"
 import { Worktree as WorktreeState } from "@/utils/worktree"
 import { setSessionHandoff } from "@/pages/session/handoff"
 import { SessionRouteKey, SessionStateKey } from "@/utils/server-scope"
-import { Identifier } from "@/utils/id"
 import { same } from "@/utils/same"
 import { cancelProjectNavigationEvent } from "@/utils/session-route"
 
@@ -105,8 +104,6 @@ export default function LegacyLayout(props: ParentProps) {
       workspaceBranchName: {} as Record<string, Record<string, string>>,
       workspaceExpanded: {} as Record<string, boolean>,
       gettingStartedDismissed: false,
-      prOpening: false,
-      prCreating: false,
     }),
   )
 
@@ -596,107 +593,6 @@ export default function LegacyLayout(props: ParentProps) {
         })
       })
       .catch(showRequestError)
-  }
-
-  function projectContainsDirectory(project: LocalProject, directory: string) {
-    const key = pathKey(directory)
-    if (pathKey(project.worktree) === key) return true
-    const directories = project.id?.startsWith("feature:")
-      ? (store.workspaceOrder[project.worktree] ?? [])
-      : (project.sandboxes ?? [])
-    return directories.some((item) => pathKey(item) === key)
-  }
-
-  function projectForDirectory(directory: string) {
-    return layout.projects.list().find((project) => projectContainsDirectory(project, directory))
-  }
-
-  function isPullRequestDirectory(directory: string) {
-    const [data] = serverSync().child(directory, { bootstrap: false })
-    if (data.vcs) return true
-
-    const project = projectForDirectory(directory)
-    if (!project) return false
-    if (project.id?.startsWith("feature:")) return pathKey(directory) !== pathKey(project.worktree)
-    if (project.vcs === "git") return true
-    return pathKey(directory) !== pathKey(project.worktree)
-  }
-
-  function canOpenPR(directory: string) {
-    return !!server.isLocal() && isPullRequestDirectory(directory)
-  }
-
-  async function sendCreatePrPrompt(directory: string) {
-    if (store.prCreating) return
-    setStore("prCreating", true)
-    try {
-      const session = await serverSDK()
-        .client.session.create({ directory })
-        .then((result) => result.data)
-      if (!session) throw new Error(language.t("prompt.toast.sessionCreateFailed.title"))
-      navigateWithSidebarReset(sessionHref(directory, session.id))
-      await serverSDK().client.session.promptAsync({
-        sessionID: session.id,
-        directory,
-        parts: [
-          {
-            id: Identifier.ascending("part"),
-            type: "text",
-            text: language.t("session.header.openPR.prompt"),
-          },
-        ],
-      })
-    } catch (err) {
-      showRequestError(err)
-    } finally {
-      setStore("prCreating", false)
-    }
-  }
-
-  async function openPullRequest(directory: string) {
-    if (store.prOpening || store.prCreating || !canOpenPR(directory)) return
-    setStore("prOpening", true)
-    try {
-      const result = await serverSDK()
-        .client.project.openPullRequest({ directory })
-        .then((response) => response.data)
-      if (!result) throw new Error(language.t("common.requestFailed"))
-      if (result.status === "found") {
-        platform.openLink(result.url)
-        return
-      }
-      dialog.show(() => <DialogCreatePullRequest onCreate={() => void sendCreatePrPrompt(directory)} />)
-    } catch (err) {
-      showRequestError(err)
-    } finally {
-      setStore("prOpening", false)
-    }
-  }
-
-  function DialogCreatePullRequest(props: { onCreate: () => void }) {
-    return (
-      <Dialog title={language.t("session.header.openPR.dialog.title")} fit>
-        <div class="flex flex-col gap-4 pl-6 pr-2.5 pb-3">
-          <span class="text-14-regular text-text-strong">{language.t("session.header.openPR.dialog.description")}</span>
-          <div class="flex justify-end gap-2">
-            <Button variant="ghost" size="large" onClick={() => dialog.close()}>
-              {language.t("common.cancel")}
-            </Button>
-            <Button
-              variant="primary"
-              size="large"
-              disabled={store.prCreating}
-              onClick={() => {
-                dialog.close()
-                props.onCreate()
-              }}
-            >
-              {language.t("session.header.openPR.dialog.create")}
-            </Button>
-          </div>
-        </div>
-      </Dialog>
-    )
   }
 
   function scrollToSession(sessionId: string, sessionKey: string) {
@@ -2409,10 +2305,8 @@ export default function LegacyLayout(props: ParentProps) {
     showRemoveFromWorkspaceDialog: (root, directory) =>
       dialog.show(() => <DialogRemoveFromWorkspace root={root} directory={directory} />),
     openRemoteVSCode,
-    openPullRequest: (directory) => void openPullRequest(directory),
     copyPath,
     canOpenRemoteVSCode,
-    canOpenPR,
     setScrollContainerRef: (el, mobile) => {
       if (!mobile) scrollContainerRef = el
     },
@@ -2436,10 +2330,8 @@ export default function LegacyLayout(props: ParentProps) {
     closeProject,
     showEditProjectDialog: (proj) => showEditProjectDialog(server.current!, proj),
     openRemoteVSCode,
-    openPullRequest: (directory) => void openPullRequest(directory),
     copyPath,
     canOpenRemoteVSCode,
-    canOpenPR,
     toggleProjectWorkspaces,
     workspacesEnabled: (project) => project.vcs === "git" || isWorkspaceRootProject(project),
     projectPending: (directory) =>
@@ -2611,11 +2503,6 @@ export default function LegacyLayout(props: ParentProps) {
                             })}
                           </DropdownMenu.ItemLabel>
                         </DropdownMenu.Item>
-                        <Show when={canOpenPR(project.worktree)}>
-                          <DropdownMenu.Item onSelect={() => void openPullRequest(project.worktree)}>
-                            <DropdownMenu.ItemLabel>{language.t("session.header.openPR")}</DropdownMenu.ItemLabel>
-                          </DropdownMenu.Item>
-                        </Show>
                         <DropdownMenu.Item onSelect={() => copyPath(project.worktree)}>
                           <DropdownMenu.ItemLabel>{language.t("session.header.open.copyPath")}</DropdownMenu.ItemLabel>
                         </DropdownMenu.Item>

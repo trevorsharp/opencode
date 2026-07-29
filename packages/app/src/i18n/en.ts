@@ -730,13 +730,6 @@ export const dict = {
   "session.header.open.app.androidStudio": "Android Studio",
   "session.header.open.app.powershell": "PowerShell",
   "session.header.open.app.sublimeText": "Sublime Text",
-  "session.header.openPR": "Open pull request",
-  "session.header.openPR.prompt":
-    "Create a pull request for the current branch. Review the changes, summarize the work clearly, and use the repository's PR workflow.",
-  "session.header.openPR.dialog.title": "No open pull request",
-  "session.header.openPR.dialog.description": "No existing pull request was found for this branch.",
-  "session.header.openPR.dialog.create": "Create with OpenCode",
-
   "status.popover.trigger": "Status",
   "status.popover.ariaLabel": "Server configurations",
   "status.popover.tab.servers": "Servers",

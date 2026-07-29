@@ -14,21 +14,6 @@ const UpdatePayload = Schema.Struct({
   icon: Schema.optional(Project.Info.fields.icon),
   commands: Schema.optional(Project.Info.fields.commands),
 })
-export const ProjectPullRequestResult = Schema.Union([
-  Schema.Struct({
-    status: Schema.Literal("found"),
-    url: Schema.String,
-  }),
-  Schema.Struct({
-    status: Schema.Literal("missing"),
-  }),
-])
-export class ProjectPullRequestError extends Schema.ErrorClass<ProjectPullRequestError>("ProjectPullRequestError")(
-  {
-    message: Schema.String,
-  },
-  { httpApiStatus: 400 },
-) {}
 export class ProjectRenameError extends Schema.ErrorClass<ProjectRenameError>("ProjectRenameError")(
   {
     message: Schema.String,
@@ -68,17 +53,6 @@ export const ProjectApi = HttpApi.make("project")
             identifier: "project.initGit",
             summary: "Initialize git repository",
             description: "Create a git repository for the current project and return the refreshed project info.",
-          }),
-        ),
-        HttpApiEndpoint.post("openPullRequest", `${root}/pr/open`, {
-          query: WorkspaceRoutingQuery,
-          success: described(ProjectPullRequestResult, "Open pull request lookup result"),
-          error: [ProjectPullRequestError],
-        }).annotateMerge(
-          OpenApi.annotations({
-            identifier: "project.open_pull_request",
-            summary: "Find open pull request",
-            description: "Find an existing pull request for the current branch using the configured pr script.",
           }),
         ),
         HttpApiEndpoint.patch("update", `${root}/:projectID`, {

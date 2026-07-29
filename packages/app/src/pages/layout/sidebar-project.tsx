@@ -29,10 +29,8 @@ export type ProjectSidebarContext = {
   closeProject: (directory: string) => void
   showEditProjectDialog: (project: LocalProject) => void
   openRemoteVSCode: (directory: string) => void
-  openPullRequest: (directory: string) => void
   copyPath: (directory: string) => void
   canOpenRemoteVSCode: Accessor<boolean>
-  canOpenPR: (directory: string) => boolean
   toggleProjectWorkspaces: (project: LocalProject) => void
   workspacesEnabled: (project: LocalProject) => boolean
   projectPending: (directory: string) => boolean
@@ -159,6 +157,9 @@ const ProjectTile = (props: {
           <ContextMenu.Item onSelect={() => props.showEditProjectDialog(props.project)}>
             <ContextMenu.ItemLabel>{props.language.t("common.edit")}</ContextMenu.ItemLabel>
           </ContextMenu.Item>
+          <ContextMenu.Item onSelect={() => props.ctx.copyPath(props.project.worktree)}>
+            <ContextMenu.ItemLabel>{props.language.t("session.header.open.copyPath")}</ContextMenu.ItemLabel>
+          </ContextMenu.Item>
           <ContextMenu.Item
             disabled={!props.ctx.canOpenRemoteVSCode()}
             onSelect={() => props.ctx.openRemoteVSCode(props.project.worktree)}
@@ -168,14 +169,6 @@ const ProjectTile = (props: {
                 app: props.language.t("session.header.open.app.vscode"),
               })}
             </ContextMenu.ItemLabel>
-          </ContextMenu.Item>
-          <Show when={props.ctx.canOpenPR(props.project.worktree)}>
-            <ContextMenu.Item onSelect={() => props.ctx.openPullRequest(props.project.worktree)}>
-              <ContextMenu.ItemLabel>{props.language.t("session.header.openPR")}</ContextMenu.ItemLabel>
-            </ContextMenu.Item>
-          </Show>
-          <ContextMenu.Item onSelect={() => props.ctx.copyPath(props.project.worktree)}>
-            <ContextMenu.ItemLabel>{props.language.t("session.header.open.copyPath")}</ContextMenu.ItemLabel>
           </ContextMenu.Item>
           <ContextMenu.Item
             data-action="project-workspaces-toggle"

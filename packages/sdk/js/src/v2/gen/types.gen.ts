@@ -2440,10 +2440,6 @@ export type Project = {
   sandboxes: Array<string>
 }
 
-export type ProjectPullRequestError = {
-  message: string
-}
-
 export type ProjectRenameError = {
   message: string
 }
@@ -8791,41 +8787,6 @@ export type ProjectInitGitResponses = {
 }
 
 export type ProjectInitGitResponse = ProjectInitGitResponses[keyof ProjectInitGitResponses]
-
-export type ProjectOpenPullRequestData = {
-  body?: never
-  path?: never
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/project/pr/open"
-}
-
-export type ProjectOpenPullRequestErrors = {
-  /**
-   * ProjectPullRequestError | InvalidRequestError
-   */
-  400: ProjectPullRequestError | InvalidRequestError
-}
-
-export type ProjectOpenPullRequestError = ProjectOpenPullRequestErrors[keyof ProjectOpenPullRequestErrors]
-
-export type ProjectOpenPullRequestResponses = {
-  /**
-   * Open pull request lookup result
-   */
-  200:
-    | {
-        status: "found"
-        url: string
-      }
-    | {
-        status: "missing"
-      }
-}
-
-export type ProjectOpenPullRequestResponse = ProjectOpenPullRequestResponses[keyof ProjectOpenPullRequestResponses]
 
 export type ProjectUpdateData = {
   body?: {

@@ -5,12 +5,6 @@ export const fallbackI18n = {
   "session.header.reveal.fileExplorer": "Reveal in File Explorer",
   "session.header.reveal.containingFolder": "Open containing folder",
   "mcp.status.needs_client_registration": "needs client registration",
-  "session.header.openPR": "Open pull request",
-  "session.header.openPR.prompt":
-    "Create a pull request for the current branch. Review the changes, summarize the work clearly, and use the repository's PR workflow.",
-  "session.header.openPR.dialog.title": "No open pull request",
-  "session.header.openPR.dialog.description": "No existing pull request was found for this branch.",
-  "session.header.openPR.dialog.create": "Create with OpenCode",
   "workspace.addProject": "Add project",
   "workspace.create.title": "Create workspace",
   "workspace.create.name": "Workspace name",
