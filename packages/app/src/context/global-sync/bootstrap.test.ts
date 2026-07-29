@@ -159,6 +159,62 @@ describe("bootstrapDirectory", () => {
     expect(session.data.session_status["ses_busy"]?.type).toBe("busy")
     expect(session.data.session_status[stale.id]).toBeUndefined()
   })
+
+  describe("workspace member seeding", () => {
+    const MEMBER = "/roots/mixed/repo-alpha"
+    const gitProject = { id: "git-alpha", worktree: "/repo-alpha", sandboxes: [MEMBER, "/wt/feature"] } as Project
+    const workspaceProject = {
+      id: "feature:/roots/mixed",
+      worktree: "/roots/mixed",
+      sandboxes: [MEMBER],
+    } as Project
+
+    const seed = async (directory: string, project: Project[]) => {
+      const [store, setStore] = directoryState()
+      await bootstrapDirectory({
+        directory,
+        scope: ServerScope.local,
+        mcp: false,
+        global: {
+          config: {} satisfies Config,
+          path: { state: "", config: "", worktree: "/project", directory: "/project", home: "/home" },
+          project,
+          provider,
+        },
+        sdk: {
+          app: { agents: async () => ({ data: [] }) },
+          config: { get: async () => ({ data: {} }) },
+          path: { get: async () => ({ data: undefined }) },
+          session: { status: async () => ({ data: {} }) },
+          vcs: { get: async () => ({ data: undefined }) },
+          command: { list: async () => ({ data: [] }) },
+          permission: { list: async () => ({ data: [] }) },
+          question: { list: async () => ({ data: [] }) },
+          v2: { reference: { list: async () => ({ data: { data: [] } }) } },
+          mcp: { status: async () => ({ data: {} }) },
+          provider: { list: async () => ({ data: { all: [], connected: [], default: {} } }) },
+        } as unknown as OpencodeClient,
+        store,
+        setStore,
+        vcsCache: { setStore() {} } as unknown as VcsCache,
+        loadSessions() {},
+        translate: (key) => key,
+        queryClient: new QueryClient(),
+      })
+      await new Promise((resolve) => setTimeout(resolve, 80))
+      return store
+    }
+
+    test("seeds an exact member route with its workspace container, not the source checkout", async () => {
+      expect((await seed(MEMBER, [gitProject, workspaceProject])).project).toBe(workspaceProject.id)
+      expect((await seed(MEMBER, [workspaceProject, gitProject])).project).toBe(workspaceProject.id)
+    })
+
+    test("seeds an ordinary worktree with its source checkout", async () => {
+      expect((await seed("/wt/feature", [gitProject, workspaceProject])).project).toBe(gitProject.id)
+      expect((await seed("/repo-alpha", [workspaceProject, gitProject])).project).toBe(gitProject.id)
+    })
+  })
 })
 
 describe("query keys", () => {

@@ -51,7 +51,14 @@ import { Worktree as WorktreeState } from "@/utils/worktree"
 import { setSessionHandoff } from "@/pages/session/handoff"
 import { SessionRouteKey, SessionStateKey } from "@/utils/server-scope"
 import { same } from "@/utils/same"
-import { cancelProjectNavigationEvent } from "@/utils/session-route"
+import {
+  cancelProjectNavigationEvent,
+  legacyNewSessionHref,
+  legacyRouteDirectory,
+  legacySessionHref,
+  withWorkspaceRoot,
+  workspaceRootParam,
+} from "@/utils/session-route"
 
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useTheme, type ColorScheme } from "@opencode-ai/ui/theme/context"
@@ -61,14 +68,16 @@ import { DebugBar } from "@/components/debug-bar"
 import { TabsInfoPopup } from "@/components/help-button"
 import { Titlebar, type TitlebarUpdate } from "@/components/titlebar"
 import { useDirectoryPicker } from "@/components/directory-picker"
-import { ServerConnection, useServer } from "@/context/server"
+import { useServer } from "@/context/server"
 import { useLanguage, type Locale } from "@/context/language"
 import { pathKey } from "@/utils/path-key"
+import { owningContainer } from "@/utils/project-owner"
 import {
   displayName,
   effectiveWorkspaceOrder,
   errorMessage,
   latestRootSession,
+  openInVSCodeBase,
   openInVSCodeURL,
   sortedRootSessions,
 } from "./layout/helpers"
@@ -89,7 +98,7 @@ import {
 import { ProjectDragOverlay, SortableProject, type ProjectSidebarContext } from "./layout/sidebar-project"
 import { SidebarContent } from "./layout/sidebar-shell"
 
-const OPEN_IN_VSCODE_URL = import.meta.env.VITE_OPEN_IN_VSCODE_URL ?? "vscode://vscode-remote/ssh-remote+code-server"
+const OPEN_IN_VSCODE_URL = import.meta.env.VITE_OPEN_IN_VSCODE_URL
 
 export default function LegacyLayout(props: ParentProps) {
   const serverSDK = useServerSDK()
@@ -125,7 +134,7 @@ export default function LegacyLayout(props: ParentProps) {
   const permission = usePermission()
   const navigate = useNavigate()
   const routeLocation = useLocation()
-  setNavigate(navigate)
+  setNavigate((href) => navigate(navigationHref(href)))
   const providers = useProviders()
   const dialog = useDialog()
   const command = useCommand()
@@ -176,17 +185,14 @@ export default function LegacyLayout(props: ParentProps) {
   }
   const colorSchemeLabel = (scheme: ColorScheme) => language.t(colorSchemeKey[scheme])
   const currentDir = createMemo(() => route().dir)
-  const rootParam = createMemo(() => {
-    const value = new URLSearchParams(routeLocation.search).get("root")
-    if (!value) return
-    return decode64(value)
-  })
-  const canOpenRemoteVSCode = createMemo(() => platform.platform === "web")
+  const rootParam = createMemo(() => workspaceRootParam(routeLocation.search))
+  const canOpenRemoteVSCode = createMemo(() => platform.platform === "web" && !!openInVSCodeBase(OPEN_IN_VSCODE_URL))
 
   const [state, setState] = createStore({
     autoselect: !initialDirectory,
     busyWorkspaces: {} as Record<string, boolean>,
     pendingWorkspaces: {} as Record<string, { directory: string; root: string }>,
+    memberDirectories: {} as Record<string, string[]>,
     pendingProjects: {} as Record<string, boolean>,
     openingProject: undefined as string | undefined,
     hoverProject: undefined as string | undefined,
@@ -386,9 +392,7 @@ export default function LegacyLayout(props: ParentProps) {
   }
 
   function sessionHref(directory: string, sessionID?: string, root = activeProjectRoot(directory)) {
-    const href = `/${base64Encode(directory)}/session${sessionID ? `/${sessionID}` : ""}`
-    if (pathKey(root) === pathKey(directory)) return href
-    return `${href}?root=${base64Encode(root)}`
+    return sessionID ? legacySessionHref(directory, sessionID, root) : legacyNewSessionHref(directory, root)
   }
 
   function navigateToNewSession(directory: string, root = directory) {
@@ -540,7 +544,9 @@ export default function LegacyLayout(props: ParentProps) {
           actions: [
             {
               label: language.t("notification.action.goToSession"),
-              onClick: () => navigate(href),
+              // Same restoration the platform notification gets through setNavigate: a
+              // workspace member session must open under its owning root.
+              onClick: () => navigate(navigationHref(href)),
             },
             {
               label: language.t("common.dismiss"),
@@ -576,8 +582,10 @@ export default function LegacyLayout(props: ParentProps) {
   }
 
   function openRemoteVSCode(directory: string) {
-    if (!directory || !canOpenRemoteVSCode()) return
-    platform.openLink(openInVSCodeURL(OPEN_IN_VSCODE_URL, directory))
+    if (!canOpenRemoteVSCode()) return
+    const url = openInVSCodeURL(OPEN_IN_VSCODE_URL, directory)
+    if (!url) return
+    platform.openLink(url)
   }
 
   function copyPath(directory: string) {
@@ -621,13 +629,8 @@ export default function LegacyLayout(props: ParentProps) {
       if (project) return project
     }
 
-    const key = pathKey(directory)
-
-    const direct = projects.find((p) => pathKey(p.worktree) === key)
-    if (direct) return direct
-
-    const sandbox = projects.find((p) => p.sandboxes?.some((item) => pathKey(item) === key))
-    if (sandbox) return sandbox
+    const container = owningContainer(projects, directory)
+    if (container) return container
 
     const [child] = serverSync().child(directory, { bootstrap: false })
     const id = child.project
@@ -689,6 +692,11 @@ export default function LegacyLayout(props: ParentProps) {
     for (const item of workspaces) {
       setWorkspaceName(item.directory, item.description ?? item.branch ?? item.name, project.id, item.branch)
     }
+    setState(
+      "memberDirectories",
+      pathKey(project.worktree),
+      workspaces.filter((item) => item.root).map((item) => pathKey(item.directory)),
+    )
     const target = serverSync().data.project.find((item) => item.worktree === project.worktree)
     if (!same(target?.sandboxes?.map(pathKey), directories.map(pathKey))) {
       serverSync().set(
@@ -1304,11 +1312,8 @@ export default function LegacyLayout(props: ParentProps) {
     if (queryRoot && pathKey(directory) === pathKey(currentDir())) return queryRoot
 
     const key = pathKey(directory)
-    const direct = layout.projects.list().find((item) => pathKey(item.worktree) === key)
-    if (direct) return direct.worktree
-
-    const project = layout.projects.list().find((item) => item.sandboxes?.some((sandbox) => pathKey(sandbox) === key))
-    if (project) return project.worktree
+    const container = owningContainer(layout.projects.list(), directory)
+    if (container) return container.worktree
 
     const known = Object.entries(store.workspaceOrder).find(
       ([root, dirs]) => pathKey(root) === key || dirs.some((item) => pathKey(item) === key),
@@ -1325,6 +1330,15 @@ export default function LegacyLayout(props: ParentProps) {
 
   function activeProjectRoot(directory: string) {
     return currentProject()?.worktree ?? projectRoot(directory)
+  }
+
+  // Notifications and alerts build plain directory hrefs, so restore the owning workspace root
+  // before handing them to the router.
+  function navigationHref(href: string) {
+    if (workspaceRootParam(href.split("?")[1]?.split("#")[0])) return href
+    const directory = legacyRouteDirectory(href)
+    if (!directory) return href
+    return withWorkspaceRoot(href, directory, projectRoot(directory))
   }
 
   function rememberSessionRoute(directory: string, id: string, root = activeProjectRoot(directory)) {
@@ -1591,23 +1605,6 @@ export default function LegacyLayout(props: ParentProps) {
     makeEventListener(window, deepLinkEvent, handler as EventListener)
   })
 
-  async function renameProject(project: LocalProject, next: string) {
-    const current = displayName(project)
-    if (next === current) return
-    const name = next === getFilename(project.worktree) ? "" : next
-
-    if (project.id && project.id !== "global") {
-      await serverSDK().client.project.update({
-        projectID: project.id,
-        directory: project.worktree,
-        name: isWorkspaceRootProject(project) ? next : name,
-      })
-      return
-    }
-
-    serverSync().project.meta(project.worktree, { name })
-  }
-
   const renameWorkspace = (directory: string, next: string, projectId?: string, branch?: string) => {
     const current = workspaceName(directory, projectId, branch) ?? branch ?? getFilename(directory)
     if (current === next) return
@@ -1673,14 +1670,6 @@ export default function LegacyLayout(props: ParentProps) {
     return project.sandboxes?.some((directory) => pathKey(directory).startsWith(root)) ?? false
   }
 
-  const showEditProjectDialog = (conn: ServerConnection.Any, project: LocalProject) => {
-    const run = ++dialogRun
-    void import("@/components/dialog-edit-project").then((x) => {
-      if (dialogDead || dialogRun !== run) return
-      dialog.show(() => <x.DialogEditProject server={conn} project={project} />)
-    })
-  }
-
   function chooseProject() {
     const conn = server.current
     if (!conn) return
@@ -1705,11 +1694,11 @@ export default function LegacyLayout(props: ParentProps) {
   }
 
   const removeFromWorkspace = async (root: string, directory: string, leaveRemovedWorkspace = false) => {
-    if (directory === root) return
+    const removedKey = pathKey(directory)
+    if (removedKey === pathKey(root)) return
 
     const current = currentDir()
     const currentKey = pathKey(current)
-    const removedKey = pathKey(directory)
     const shouldLeave = leaveRemovedWorkspace || (!!params.dir && currentKey === removedKey)
     if (!leaveRemovedWorkspace && shouldLeave) {
       navigateWithSidebarReset(sessionHref(root, undefined, root))
@@ -2304,6 +2293,7 @@ export default function LegacyLayout(props: ParentProps) {
       dialog.show(() => <DialogResetWorkspace root={root} directory={directory} />),
     showRemoveFromWorkspaceDialog: (root, directory) =>
       dialog.show(() => <DialogRemoveFromWorkspace root={root} directory={directory} />),
+    isWorkspaceMember: (root, directory) => !!state.memberDirectories[pathKey(root)]?.includes(pathKey(directory)),
     openRemoteVSCode,
     copyPath,
     canOpenRemoteVSCode,
@@ -2328,7 +2318,6 @@ export default function LegacyLayout(props: ParentProps) {
     navigateToProject,
     openSidebar: () => layout.sidebar.open(),
     closeProject,
-    showEditProjectDialog: (proj) => showEditProjectDialog(server.current!, proj),
     openRemoteVSCode,
     copyPath,
     canOpenRemoteVSCode,
@@ -2361,7 +2350,6 @@ export default function LegacyLayout(props: ParentProps) {
       if (!item) return ""
       return item.name || getFilename(item.worktree)
     })
-    const projectId = createMemo(() => project()?.id ?? "")
     const worktree = createMemo(() => project()?.worktree ?? "")
     const slug = createMemo(() => {
       const dir = worktree()
@@ -2442,16 +2430,7 @@ export default function LegacyLayout(props: ParentProps) {
               <div class="shrink-0 pl-1 py-1">
                 <div class="group/project flex items-start justify-between gap-2 py-2 pl-2 pr-0">
                   <div class="flex flex-col min-w-0">
-                    <InlineEditor
-                      id={`project:${projectId()}`}
-                      value={projectName}
-                      onSave={(next) => {
-                        void renameProject(project, next)
-                      }}
-                      class="text-14-medium text-text-strong truncate"
-                      displayClass="text-14-medium text-text-strong truncate"
-                      stopPropagation
-                    />
+                    <span class="text-14-medium text-text-strong truncate">{projectName()}</span>
 
                     <Tooltip
                       placement="bottom"
@@ -2486,23 +2465,19 @@ export default function LegacyLayout(props: ParentProps) {
                     />
                     <DropdownMenu.Portal>
                       <DropdownMenu.Content class="mt-1">
-                        <DropdownMenu.Item
-                          onSelect={() => {
-                            showEditProjectDialog(server.current!, project)
-                          }}
-                        >
-                          <DropdownMenu.ItemLabel>{language.t("common.edit")}</DropdownMenu.ItemLabel>
-                        </DropdownMenu.Item>
-                        <DropdownMenu.Item
-                          disabled={!canOpenRemoteVSCode()}
-                          onSelect={() => openRemoteVSCode(project.worktree)}
-                        >
-                          <DropdownMenu.ItemLabel>
-                            {language.t("session.header.open.ariaLabel", {
-                              app: language.t("session.header.open.app.vscode"),
-                            })}
-                          </DropdownMenu.ItemLabel>
-                        </DropdownMenu.Item>
+                        <Show when={canOpenRemoteVSCode()}>
+                          <DropdownMenu.Item
+                            data-action="project-open-vscode"
+                            data-project={slug()}
+                            onSelect={() => openRemoteVSCode(project.worktree)}
+                          >
+                            <DropdownMenu.ItemLabel>
+                              {language.t("session.header.open.ariaLabel", {
+                                app: language.t("session.header.open.app.vscode"),
+                              })}
+                            </DropdownMenu.ItemLabel>
+                          </DropdownMenu.Item>
+                        </Show>
                         <DropdownMenu.Item onSelect={() => copyPath(project.worktree)}>
                           <DropdownMenu.ItemLabel>{language.t("session.header.open.copyPath")}</DropdownMenu.ItemLabel>
                         </DropdownMenu.Item>

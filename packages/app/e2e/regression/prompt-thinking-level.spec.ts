@@ -2,6 +2,9 @@ import { expect, test, type Page } from "@playwright/test"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { mockOpenCodeServer } from "../utils/mock-server"
 import { expectAppVisible } from "../utils/waits"
+import { skipWhenV2LayoutUnreachable } from "../utils/legacy-layout-policy"
+
+skipWhenV2LayoutUnreachable("the v2 prompt input's thinking level control")
 
 const directory = "C:/OpenCode/PromptThinkingLevelRegression"
 const projectID = "proj_prompt_thinking_level_regression"

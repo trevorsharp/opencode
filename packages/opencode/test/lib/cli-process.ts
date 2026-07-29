@@ -123,9 +123,10 @@ export type ServeHandle = {
   readonly url: string
   readonly hostname: string
   readonly port: number
-  // Sends SIGTERM. The scope finalizer also calls this, so tests rarely need
-  // to invoke it directly — useful for tests that assert exit behavior.
-  readonly kill: () => void
+  // Sends SIGTERM by default. The scope finalizer also calls this, so tests
+  // rarely need to invoke it directly — useful for tests that assert exit
+  // behavior, including SIGKILL for hard-crash semantics.
+  readonly kill: (signal?: NodeJS.Signals) => void
   // Resolves with the exit code once the process exits. Bun returns a number.
   readonly exited: Promise<number>
 }
@@ -378,8 +379,8 @@ export function withCliFixture<A, E>(
         url: match.url,
         hostname: match.hostname,
         port: match.port,
-        kill: () => {
-          proc.kill()
+        kill: (signal) => {
+          proc.kill(signal)
         },
         exited: proc.exited as Promise<number>,
       } satisfies ServeHandle

@@ -98,7 +98,7 @@ import { diffs as list } from "@/utils/diffs"
 import { Persist, persisted } from "@/utils/persist"
 import { extractPromptFromParts } from "@/utils/prompt"
 import { formatServerError, isLocalSessionNotFoundError, isSessionNotFoundError } from "@/utils/server-errors"
-import { legacySessionHref, requireServerKey, sessionHref } from "@/utils/session-route"
+import { legacySessionHref, requireServerKey, sessionHref, workspaceRootParam } from "@/utils/session-route"
 import { useUsageExceededDialogs } from "./session/usage-exceeded-dialogs"
 import { createSessionOwnership } from "./session/session-ownership"
 import { createSessionLineage } from "./session/session-lineage"
@@ -2204,7 +2204,7 @@ export default function Page() {
               navigate(
                 params.serverKey
                   ? sessionHref(requireServerKey(params.serverKey), id)
-                  : legacySessionHref(sdk().directory, id, location.search),
+                  : legacySessionHref(sdk().directory, id, workspaceRootParam(location.search)),
               )
             },
             setPromptRef: (el) => {

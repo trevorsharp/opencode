@@ -7,16 +7,14 @@ import { useGlobal } from "@/context/global"
 import { type LocalProject } from "@/context/layout"
 import { ServerConnection } from "@/context/server"
 
-export function createEditProjectModel(props: {
-  project: LocalProject
-  server: ServerConnection.Any
-  nameOnly?: boolean
-}) {
+export function createEditProjectModel(props: { project: LocalProject; server: ServerConnection.Any }) {
   const dialog = useDialog()
   const global = useGlobal()
   const serverCtx = createMemo(() => global.ensureServerCtx(props.server))
   const folderName = createMemo(() => getFilename(props.project.worktree))
   const defaultName = createMemo(() => props.project.name || folderName())
+  // A workspace root's name is authoritative, so it is stored verbatim rather than being cleared
+  // when it happens to match the folder name the way an ordinary project's is.
   const isWorkspaceRoot = createMemo(() => {
     if (props.project.id?.startsWith("feature:")) return true
     const root = `${props.project.worktree.replace(/\/+$/, "")}/`
@@ -84,26 +82,18 @@ export function createEditProjectModel(props: {
           projectID: props.project.id,
           directory: props.project.worktree,
           name: nextName,
-          ...(props.nameOnly
-            ? {}
-            : {
-                icon: { color: store.color || "", override: store.iconOverride || "" },
-                commands: { start },
-              }),
+          icon: { color: store.color || "", override: store.iconOverride || "" },
+          commands: { start },
         })
-        if (!props.nameOnly) serverCtx().sync.project.icon(props.project.worktree, store.iconOverride || undefined)
+        serverCtx().sync.project.icon(props.project.worktree, store.iconOverride || undefined)
         dialog.close()
         return
       }
 
       serverCtx().sync.project.meta(props.project.worktree, {
         name: nextName,
-        ...(props.nameOnly
-          ? {}
-          : {
-              icon: { color: store.color || undefined, override: store.iconOverride || undefined },
-              commands: { start: start || undefined },
-            }),
+        icon: { color: store.color || undefined, override: store.iconOverride || undefined },
+        commands: { start: start || undefined },
       })
       dialog.close()
     },

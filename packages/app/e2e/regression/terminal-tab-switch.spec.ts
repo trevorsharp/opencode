@@ -2,6 +2,9 @@ import { base64Encode } from "@opencode-ai/core/util/encode"
 import { expect, test, type Page } from "@playwright/test"
 import { mockOpenCodeServer } from "../utils/mock-server"
 import { expectSessionTitle } from "../utils/waits"
+import { skipWhenV2LayoutUnreachable } from "../utils/legacy-layout-policy"
+
+skipWhenV2LayoutUnreachable("the v2 terminal panel across titlebar session tabs")
 
 const directory = "C:/OpenCode/TerminalTabSwitch"
 const projectID = "proj_terminal_tab_switch"

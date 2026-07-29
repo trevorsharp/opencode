@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { commandPaletteOptions, resolveKeybindOption, upsertCommandRegistration, type CommandOption } from "./command"
+import {
+  commandPaletteOptions,
+  pruneRetiredCommands,
+  resolveKeybindOption,
+  upsertCommandRegistration,
+  type CommandOption,
+} from "./command"
 
 const paletteOptions: CommandOption[] = [
   { id: "settings.open", title: "Open settings" },
@@ -51,5 +57,27 @@ describe("resolveKeybindOption", () => {
     const contextual = { id: "terminal.close", title: "Close terminal", when: () => false }
 
     expect(resolveKeybindOption([fallback, contextual], new KeyboardEvent("keydown"))).toBe(fallback)
+  })
+})
+
+describe("pruneRetiredCommands", () => {
+  test("drops retired entries from a persisted catalog", () => {
+    const draft: Record<string, { title: string }> = {
+      "agent.cycle": { title: "Cycle agent" },
+      "agent.cycle.reverse": { title: "Cycle agent reverse" },
+      "model.cycle": { title: "Cycle model" },
+    }
+
+    pruneRetiredCommands(draft)
+
+    expect(Object.keys(draft)).toEqual(["model.cycle"])
+  })
+
+  test("ignores retired entries that are absent", () => {
+    const draft: Record<string, { title: string }> = { "model.cycle": { title: "Cycle model" } }
+
+    pruneRetiredCommands(draft)
+
+    expect(Object.keys(draft)).toEqual(["model.cycle"])
   })
 })

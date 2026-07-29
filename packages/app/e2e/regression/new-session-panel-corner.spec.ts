@@ -1,6 +1,9 @@
 import { expect, test } from "@playwright/test"
 import { mockOpenCodeServer } from "../utils/mock-server"
 import { expectAppVisible } from "../utils/waits"
+import { skipWhenV2LayoutUnreachable } from "../utils/legacy-layout-policy"
+
+skipWhenV2LayoutUnreachable("the rounded v2 new-session panel")
 
 const draftID = "draft_new_session_panel_corner"
 const directory = "C:/OpenCode/NewSessionPanelCorner"

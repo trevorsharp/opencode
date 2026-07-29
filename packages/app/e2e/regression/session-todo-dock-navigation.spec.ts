@@ -2,6 +2,9 @@ import { base64Encode } from "@opencode-ai/core/util/encode"
 import { expect, test, type Page } from "@playwright/test"
 import { mockOpenCodeServer } from "../utils/mock-server"
 import { expectSessionTitle } from "../utils/waits"
+import { skipWhenV2LayoutUnreachable } from "../utils/legacy-layout-policy"
+
+skipWhenV2LayoutUnreachable("the v2 titlebar session tabs the todo dock navigation runs through")
 
 const directory = "C:/OpenCode/TodoDockNavigation"
 const projectID = "proj_todo_dock_navigation"

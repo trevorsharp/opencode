@@ -421,6 +421,28 @@ describe("Worktree", () => {
       { git: true },
     )
 
+    it.instance(
+      "prunes a registered worktree whose directory is already gone",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const svc = yield* Worktree.Service
+          const dir = path.join(path.dirname(test.directory), `${path.basename(test.directory)}-missing-worktree`)
+          yield* git(test.directory, ["worktree", "add", "--detach", dir])
+          yield* Effect.addFinalizer(() =>
+            gitResult(test.directory, ["worktree", "remove", "--force", dir]).pipe(Effect.ignore),
+          )
+          yield* Effect.promise(() => rm(dir, { recursive: true, force: true }))
+
+          const ok = yield* svc.remove({ directory: dir })
+
+          expect(ok).toBe(true)
+          const list = yield* git(test.directory, ["worktree", "list", "--porcelain"])
+          expect(normalize(list)).not.toContain(normalize(dir))
+        }),
+      { git: true },
+    )
+
     it.instance("fails with NotGitError for non-git directories", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance

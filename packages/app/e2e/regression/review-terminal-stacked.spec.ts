@@ -1,6 +1,9 @@
 import { expect, test, type Page } from "@playwright/test"
 import { mockOpenCodeServer } from "../utils/mock-server"
 import { expectSessionTitle } from "../utils/waits"
+import { skipWhenV2LayoutUnreachable } from "../utils/legacy-layout-policy"
+
+skipWhenV2LayoutUnreachable("the stacked v2 review tree and terminal panels")
 
 const directory = "C:/OpenCode/ReviewTerminalStacked"
 const projectID = "proj_review_terminal_stacked"

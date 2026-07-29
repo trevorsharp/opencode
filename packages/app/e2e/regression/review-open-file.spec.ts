@@ -2,6 +2,9 @@ import { base64Encode } from "@opencode-ai/core/util/encode"
 import { expect, test } from "@playwright/test"
 import { mockOpenCodeServer } from "../utils/mock-server"
 import { expectSessionTitle } from "../utils/waits"
+import { skipWhenV2LayoutUnreachable } from "../utils/legacy-layout-policy"
+
+skipWhenV2LayoutUnreachable("the v2 review panel's inline file search")
 
 const directory = "C:/OpenCode/ReviewOpenFile"
 const projectID = "proj_review_open_file"

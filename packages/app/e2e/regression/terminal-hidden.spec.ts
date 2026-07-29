@@ -1,6 +1,9 @@
 import { expect, test } from "@playwright/test"
 import { mockOpenCodeServer } from "../utils/mock-server"
 import { expectSessionTitle } from "../utils/waits"
+import { skipWhenV2LayoutUnreachable } from "../utils/legacy-layout-policy"
+
+skipWhenV2LayoutUnreachable("the v2 terminal panel's unmount-while-hidden behavior")
 
 const directory = "C:/OpenCode/HiddenTerminalRegression"
 const projectID = "proj_hidden_terminal_regression"

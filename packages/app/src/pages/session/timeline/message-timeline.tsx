@@ -72,6 +72,7 @@ import {
   legacySessionHref,
   requireServerKey,
   sessionHref,
+  workspaceRootParam,
 } from "@/utils/session-route"
 import { useSDK } from "@/context/sdk"
 import { useSync } from "@/context/sync"
@@ -793,7 +794,7 @@ export function MessageTimeline(props: {
     const href = (id: string) =>
       params.serverKey
         ? sessionHref(requireServerKey(params.serverKey), id)
-        : legacySessionHref(sdk().directory, id, location.search)
+        : legacySessionHref(sdk().directory, id, workspaceRootParam(location.search))
     if (parentID) {
       navigate(href(parentID))
       return
@@ -807,7 +808,7 @@ export function MessageTimeline(props: {
       return
     }
     cancelPendingProjectNavigation()
-    navigate(legacyNewSessionHref(sdk().directory, location.search))
+    navigate(legacyNewSessionHref(sdk().directory, workspaceRootParam(location.search)))
   }
 
   const archiveSession = async (sessionID: string) => {
@@ -909,7 +910,7 @@ export function MessageTimeline(props: {
     navigate(
       params.serverKey
         ? sessionHref(requireServerKey(params.serverKey), id)
-        : legacySessionHref(sdk().directory, id, location.search),
+        : legacySessionHref(sdk().directory, id, workspaceRootParam(location.search)),
     )
   }
 

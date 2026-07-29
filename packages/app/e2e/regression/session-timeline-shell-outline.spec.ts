@@ -7,9 +7,11 @@ import {
   toolPart,
   userMessage,
 } from "../performance/timeline-stability/fixture"
+import { skipWhenV2LayoutUnreachable } from "../utils/legacy-layout-policy"
 
 for (const deviceScaleFactor of [1.25, 1.5]) {
   test(`keeps the shell outline inside a fractionally short virtual row at ${deviceScaleFactor}x`, async ({ page }) => {
+    skipWhenV2LayoutUnreachable("the v2 shell output border, which the legacy stylesheet replaces")
     const shellID = "prt_shell_outline"
     const timeline = await setupTimeline(page, {
       messages: [userMessage(), assistantMessage([shell(shellID, "completed", "shell output")])],

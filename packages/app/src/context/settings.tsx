@@ -2,6 +2,12 @@ import { createStore, reconcile } from "solid-js/store"
 import { createEffect, createMemo, createSignal, onCleanup } from "solid-js"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { persisted } from "@/utils/persist"
+import {
+  layoutPreferenceWritable,
+  resolveLayoutAnnouncementPolicy,
+  resolveLayoutPolicy,
+  resolveLayoutTransitionPolicy,
+} from "@/context/legacy-layout"
 import { usePlatform } from "@/context/platform"
 
 export interface NotificationSettings {
@@ -56,9 +62,11 @@ export interface Settings {
 export const monoDefault = "System Mono"
 export const sansDefault = "System Sans"
 export const terminalDefault = monoDefault
-export const newLayoutDesignsDefault = false
+const legacyNewLayoutDesignsDefault = import.meta.env.VITE_OPENCODE_CHANNEL !== "prod"
+export const newLayoutDesignsDefault = true
 // Existing users can switch layouts until local midnight on this date. Set new Date(YYYY, M-1, D) to show.
-export const oldInterfaceSunset = undefined
+export const oldInterfaceSunset = new Date(2026, 8, 14)
+const newLayoutDesignsUpgradeCutoff = "1.17.19"
 
 function compareVersions(a: string, b: string) {
   const parse = (version: string) => {
@@ -88,9 +96,17 @@ export function shouldDisplayTabsToast(
 }
 
 export function shouldEnableNewLayout(previous: string | undefined, current: string | undefined) {
-  void previous
-  void current
-  return false
+  if (!current) return false
+  const currentComparison = compareVersions(current, newLayoutDesignsUpgradeCutoff)
+  if (!previous) return currentComparison !== undefined && currentComparison > 0
+  if (!isAppUpgrade(previous, current)) return false
+  const previousComparison = compareVersions(previous, newLayoutDesignsUpgradeCutoff)
+  return (
+    previousComparison !== undefined &&
+    currentComparison !== undefined &&
+    previousComparison <= 0 &&
+    currentComparison > 0
+  )
 }
 
 export function layoutTransitionState(scheduled: boolean, eligible: boolean, retired: boolean, dismissed: boolean) {
@@ -226,7 +242,7 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
       () => store.general?.showCustomAgents,
       defaultSettings.general.showCustomAgents,
     )
-    const sunset = oldInterfaceSunset as Date | undefined
+    const sunset = oldInterfaceSunset
     const [oldInterfaceRetired, setOldInterfaceRetired] = createSignal(sunset ? Date.now() >= sunset.getTime() : false)
     const layoutTransitionClassified = createMemo(() => typeof store.general?.layoutTransitionEligible === "boolean")
     const layoutTransitionEligible = withFallback(() => store.general?.layoutTransitionEligible, false)
@@ -237,9 +253,32 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
         : false,
     )
     const layoutTransition = createMemo(() =>
-      layoutTransitionState(!!sunset, layoutTransitionEligible(), oldInterfaceRetired(), newInterfaceNoticeDismissed()),
+      resolveLayoutTransitionPolicy(
+        layoutTransitionState(
+          !!sunset,
+          layoutTransitionEligible(),
+          oldInterfaceRetired(),
+          newInterfaceNoticeDismissed(),
+        ),
+      ),
     )
-    const newLayoutDesigns = createMemo(() => false)
+    const upstreamNewLayoutDesigns = createMemo(() => {
+      if (layoutUpgrade()) return true
+      if (!ready() && !oldInterfaceRetired()) return legacyNewLayoutDesignsDefault
+      if (!layoutTransitionClassified()) {
+        return resolveNewLayoutDesigns(
+          oldInterfaceRetired(),
+          store.general?.newLayoutDesigns,
+          legacyNewLayoutDesignsDefault,
+        )
+      }
+      return resolveNewLayoutDesigns(
+        oldInterfaceRetired(),
+        store.general?.newLayoutDesigns,
+        layoutTransitionEligible() ? legacyNewLayoutDesignsDefault : newLayoutDesignsDefault,
+      )
+    })
+    const newLayoutDesigns = createMemo(() => resolveLayoutPolicy(upstreamNewLayoutDesigns()))
     const visible = (preference: () => boolean) => createMemo(() => !newLayoutDesigns() || preference())
 
     if (sunset && !oldInterfaceRetired()) {
@@ -379,7 +418,11 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
         },
         newLayoutDesigns,
         setNewLayoutDesigns(value: boolean) {
-          void value
+          if (!layoutPreferenceWritable()) return
+          const next = oldInterfaceRetired() ? true : value
+          if (newLayoutDesigns() === next) return
+          setStore("general", "newLayoutDesigns", next)
+          if (typeof window !== "undefined") setTimeout(() => window.location.reload())
         },
         layoutTransitionClassified,
         setOldLayoutEligible(eligible: boolean) {
@@ -392,7 +435,9 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
         dismissNewInterfaceNotice() {
           setStore("general", "newInterfaceNoticeDismissed", true)
         },
-        shouldDisplayTabsToast: withFallback(() => store.general?.shouldDisplayTabsToast, false),
+        shouldDisplayTabsToast: createMemo(() =>
+          resolveLayoutAnnouncementPolicy(store.general?.shouldDisplayTabsToast ?? false),
+        ),
         dismissTabsToast() {
           setStore("general", "shouldDisplayTabsToast", false)
         },

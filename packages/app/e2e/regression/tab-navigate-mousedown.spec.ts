@@ -1,5 +1,8 @@
 import { expect, test, type Page, type Route } from "@playwright/test"
 import { base64Encode } from "@opencode-ai/core/util/encode"
+import { skipWhenV2LayoutUnreachable } from "../utils/legacy-layout-policy"
+
+skipWhenV2LayoutUnreachable("titlebar session tabs and their navigation order")
 
 const server = "http://127.0.0.1:4096"
 const sessionA = session("ses_tab_a", "Tab A session")

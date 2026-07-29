@@ -277,21 +277,19 @@ function createWorkspaceTerminalSession(
 
     const active = store.active === pty.id
 
-    batch(() => {
-      setStore("all", index, {
-        id: next.data.id,
-        title: next.data.title ?? pty.title,
-        titleNumber: pty.titleNumber,
-        buffer: undefined,
-        cursor: undefined,
-        scrollY: undefined,
-        rows: undefined,
-        cols: undefined,
-      })
-      if (active) {
-        setStore("active", next.data.id)
-      }
+    setStore("all", index, {
+      id: next.data.id,
+      title: next.data.title ?? pty.title,
+      titleNumber: pty.titleNumber,
+      buffer: undefined,
+      cursor: undefined,
+      scrollY: undefined,
+      rows: undefined,
+      cols: undefined,
     })
+    if (active) {
+      setStore("active", next.data.id)
+    }
   }
 
   return {
@@ -321,8 +319,10 @@ function createWorkspaceTerminalSession(
             title: pty.data?.title ?? defaultTitle(nextNumber),
             titleNumber: nextNumber,
           }
+          // Register the terminal before activating it so tab triggers exist when the
+          // controlled selection changes, otherwise the tabs coerce selection back.
+          setStore("all", store.all.length, newTerminal)
           batch(() => {
-            setStore("all", store.all.length, newTerminal)
             setStore("active", id)
             if (focusRequest !== undefined && ui.focus?.request === focusRequest) {
               setUi("focus", { request: focusRequest, id, pending: false })

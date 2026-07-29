@@ -63,7 +63,13 @@ import LegacyLayout from "@/pages/layout"
 import NewLayout from "@/pages/layout-new"
 import { ErrorPage } from "./pages/error"
 import { useCheckServerHealth } from "./utils/server-health"
-import { legacySessionHref, legacySessionServer, requireServerKey, sessionHref } from "./utils/session-route"
+import {
+  legacySessionHref,
+  legacySessionServer,
+  requireServerKey,
+  sessionHref,
+  workspaceRootParam,
+} from "./utils/session-route"
 import { createSessionLineage } from "@/pages/session/session-lineage"
 
 import { SessionPage, SessionRouteErrorBoundary, TargetSessionRouteContent } from "@/pages/session"
@@ -147,6 +153,7 @@ function LegacyTargetSessionRoute() {
 function LegacyTargetSessionRedirect() {
   const params = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const sync = useServerSync()
   const current = createSessionLineage(
     () => params.id,
@@ -156,7 +163,7 @@ function LegacyTargetSessionRedirect() {
   createEffect(() => {
     const directory = current()?.session.directory
     if (!directory) return
-    navigate(legacySessionHref(directory, params.id), { replace: true })
+    navigate(legacySessionHref(directory, params.id, workspaceRootParam(location.search)), { replace: true })
   })
 
   return null

@@ -27,8 +27,11 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
+import { LLMExternalRuntime } from "./llm/external-runtime"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
+import { AppProcess } from "@opencode-ai/core/process"
+import { InstanceState } from "@/effect/instance-state"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
@@ -70,6 +73,7 @@ const live: Layer.Layer<
   | EventV2Bridge.Service
   | LLMClientService
   | RuntimeFlags.Service
+  | AppProcess.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -81,6 +85,7 @@ const live: Layer.Layer<
     const events = yield* EventV2Bridge.Service
     const llmClient = yield* LLMClient.Service
     const flags = yield* RuntimeFlags.Service
+    const appProcess = yield* AppProcess.Service
 
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
       yield* Effect.logInfo("stream", {
@@ -91,6 +96,41 @@ const live: Layer.Layer<
         agent: input.agent.name,
         mode: input.agent.mode,
       })
+
+      // External-agent models run a local process instead of an HTTP provider, so
+      // they resolve no SDK and no provider options. Their system instructions are
+      // the workflow-supplied ones only; the agent brings its own context.
+      const external = LLMExternalRuntime.select(input.model)
+      if (external) {
+        // The only provider option an external agent honours is the quiet window
+        // after which its execution is treated as stuck.
+        const options = (yield* provider.getProvider(input.model.providerID))?.options
+        const chunkTimeout = options?.["chunkTimeout"]
+        yield* Effect.logInfo("llm runtime selected", {
+          "llm.runtime": "external",
+          "llm.external": external.id,
+          "llm.provider": input.model.providerID,
+          "llm.model": input.model.id,
+        })
+        return {
+          type: "external" as const,
+          stream: LLMExternalRuntime.stream({
+            adapter: external,
+            turn: {
+              model: input.model,
+              variant: input.user.model.variant,
+              directory: yield* InstanceState.directory,
+              system: input.user.system,
+              schema: input.user.format?.type === "json_schema" ? input.user.format.schema : undefined,
+            },
+            messages: input.messages,
+            tools: input.tools,
+            process: appProcess,
+            abort: input.abort,
+            idleTimeout: typeof chunkTimeout === "number" ? chunkTimeout : undefined,
+          }),
+        }
+      }
 
       const [language, cfg, item, info] = yield* Effect.all(
         [
@@ -365,7 +405,7 @@ const live: Layer.Layer<
 
             const result = yield* run({ ...input, abort: ctrl.signal })
 
-            if (result.type === "native") return result.stream
+            if (result.type === "native" || result.type === "external") return result.stream
 
             // Adapter seam: both runtimes expose the same LLMEvent stream. Native
             // already returns one; AI SDK streams are converted here.
@@ -398,6 +438,7 @@ export const node = LayerNode.make({
     EventV2Bridge.node,
     llmClient,
     RuntimeFlags.node,
+    AppProcess.node,
   ],
 })
 

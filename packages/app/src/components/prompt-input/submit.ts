@@ -14,9 +14,8 @@ import { type ContextItem, type ImageAttachmentPart, type Prompt, type usePrompt
 import { useSDK, type DirectorySDK } from "@/context/sdk"
 import { useSync, type DirectorySync } from "@/context/sync"
 import { Identifier } from "@/utils/id"
+import { legacySessionHref, workspaceRootParam } from "@/utils/session-route"
 import { Worktree as WorktreeState } from "@/utils/worktree"
-import { decode64 } from "@/utils/base64"
-import { pathKey } from "@/utils/path-key"
 import { buildRequestParts } from "./build-request-parts"
 import { setCursorPosition } from "./editor-dom"
 import { formatServerError } from "@/utils/server-errors"
@@ -194,6 +193,7 @@ type PromptSubmitInput = {
   onAbort?: () => void
   onSubmit?: () => void
   model?: ModelSelection
+  agent?: string
 }
 
 export function createPromptSubmit(input: PromptSubmitInput) {
@@ -211,15 +211,6 @@ export function createPromptSubmit(input: PromptSubmitInput) {
   const [search] = useSearchParams<{ draftId?: string }>()
   const tabs = useTabs()
   const pendingKey = (sessionID: string) => ScopedKey.from(sdk().scope, sessionID)
-
-  const rootSearchFor = (sessionDirectory: string) => {
-    const root = new URLSearchParams(location.search).get("root")
-    if (!root) return ""
-    const decoded = decode64(root)
-    if (!decoded) return ""
-    if (pathKey(decoded) === pathKey(sessionDirectory)) return ""
-    return `?root=${root}`
-  }
 
   const errorMessage = (err: unknown) => {
     if (err && typeof err === "object" && "data" in err) {
@@ -313,7 +304,12 @@ export function createPromptSubmit(input: PromptSubmitInput) {
 
     const modelSelection = input.model ?? local.model
     const currentModel = modelSelection.current()
-    const currentAgent = local.agent.current()
+    // The legacy composer names its agent literally, and that agent must be submitted even when
+    // configuration hides it from the visible list, so resolve it against every known agent and
+    // fall back to the bare name rather than to whichever agent happens to be visible first.
+    const currentAgent = input.agent
+      ? (sync().data.agent.find((item) => item.name === input.agent) ?? { name: input.agent })
+      : local.agent.current()
     const variant = modelSelection.variant.current()
     if (!currentModel || !currentAgent) {
       showToast({
@@ -331,6 +327,9 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     const isNewSession = !params.id
     const shouldAutoAccept = isNewSession && input.autoAccept()
     const worktreeSelection = input.newSessionWorktree?.() || "main"
+    // Only the fragment of the route being left is preserved; one captured when the
+    // composer mounted would outlive the navigation it belonged to.
+    const routeState = { search: location.search, hash: location.hash || window.location.hash }
 
     let sessionDirectory = projectDirectory
     let client = sdk().client
@@ -400,7 +399,18 @@ export function createPromptSubmit(input: PromptSubmitInput) {
           layout.handoff.setTabs(base64Encode(sessionDirectory), session.id)
           const draftID = search.draftId
           if (draftID) tabs.promoteDraft(draftID, { server: tabs.draft(draftID).server, sessionId: session.id })
-          else navigate(`/${base64Encode(sessionDirectory)}/session/${session.id}${rootSearchFor(sessionDirectory)}`)
+          else {
+            const href = legacySessionHref(
+              sessionDirectory,
+              session.id,
+              workspaceRootParam(routeState.search),
+              routeState,
+            )
+            navigate(href)
+            if (routeState.hash) {
+              requestAnimationFrame(() => window.history.replaceState(window.history.state, "", href))
+            }
+          }
           submission.retarget(prompt.capture({ dir: base64Encode(sessionDirectory), id: session.id }))
         })
       }

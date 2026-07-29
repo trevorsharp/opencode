@@ -4,6 +4,7 @@ import { fixture, pageMessages } from "./session-timeline.fixture"
 import { trackPageErrors, expectNoSmokeErrors } from "../utils/errors"
 import { mockOpenCodeServer } from "../utils/mock-server"
 import { APP_READY_TIMEOUT, expectAppVisible, expectSessionTitle } from "../utils/waits"
+import { skipWhenV2LayoutUnreachable } from "../utils/legacy-layout-policy"
 
 const forbiddenText = ["Load details", "Show earlier steps"]
 
@@ -116,6 +117,7 @@ test.describe("smoke: session timeline", () => {
   })
 
   test("paints cached session tabs at the latest message", async ({ page }) => {
+    skipWhenV2LayoutUnreachable("titlebar session tabs")
     await mockOpenCodeServer(page, {
       sessions: fixture.sessions,
       provider: fixture.provider,
@@ -242,6 +244,7 @@ test.describe("smoke: session timeline", () => {
   })
 
   test("paints a cold session tab at the latest message", async ({ page }) => {
+    skipWhenV2LayoutUnreachable("titlebar session tabs")
     await mockOpenCodeServer(page, {
       sessions: fixture.sessions,
       provider: fixture.provider,
@@ -320,6 +323,7 @@ test.describe("smoke: session timeline", () => {
   })
 
   test("renders seeded timeline in order while paging through history", async ({ page }) => {
+    skipWhenV2LayoutUnreachable("the v2 home screen's project rows")
     const errors = trackPageErrors(page)
     await mockOpenCodeServer(page, {
       sessions: fixture.sessions,

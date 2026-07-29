@@ -18,7 +18,9 @@ import {
   homeProjectDirectories,
   homeSessionServerStatus,
   latestRootSession,
+  openInVSCodeBase,
   openInVSCodeURL,
+  projectForSession,
   toggleHomeProjectSelection,
 } from "./helpers"
 import { pathKey } from "@/utils/path-key"
@@ -314,21 +316,94 @@ describe("layout workspace helpers", () => {
     expect(reads).toBe(1)
   })
 
-  test("builds the default VS Code remote URL", () => {
-    expect(openInVSCodeURL("vscode://vscode-remote/ssh-remote+code-server", "/home/sharp/my project")).toBe(
-      "vscode://vscode-remote/ssh-remote+code-server/home/sharp/my%20project?windowId=_blank",
+  test("rejects missing, malformed, and unsupported vscode base urls", () => {
+    expect(openInVSCodeBase(undefined)).toBeUndefined()
+    expect(openInVSCodeBase("")).toBeUndefined()
+    expect(openInVSCodeBase("not a url")).toBeUndefined()
+    expect(openInVSCodeBase("ftp://code.example.com")).toBeUndefined()
+    expect(openInVSCodeURL(undefined, "/home/sharp")).toBeUndefined()
+    expect(openInVSCodeURL("not a url", "/home/sharp")).toBeUndefined()
+    expect(openInVSCodeURL("ftp://code.example.com", "/home/sharp")).toBeUndefined()
+    expect(openInVSCodeURL("https://code.example.com", "")).toBeUndefined()
+  })
+
+  test("sets the folder parameter on http and https base urls", () => {
+    const url = new URL(openInVSCodeURL("https://code.example.com/open?theme=dark", "/home/sharp/my project")!)
+    expect(url.searchParams.getAll("folder")).toEqual(["/home/sharp/my project"])
+    expect(url.searchParams.get("theme")).toBe("dark")
+    expect(openInVSCodeURL("http://code.example.com/?folder=%2Fold#panel", "/home/sharp/projects")).toBe(
+      "http://code.example.com/?folder=%2Fhome%2Fsharp%2Fprojects#panel",
     )
   })
 
-  test("builds a browser URL with the project folder", () => {
-    expect(openInVSCodeURL("https://trs.dev/?folder=", "/home/sharp/projects")).toBe(
-      "https://trs.dev/?folder=%2Fhome%2Fsharp%2Fprojects",
+  test("appends the directory to a vscode base url", () => {
+    expect(openInVSCodeURL("vscode://vscode-remote/ssh-remote+code-server", "/home/sharp/my project")).toBe(
+      "vscode://vscode-remote/ssh-remote+code-server/home/sharp/my%20project?windowId=_blank",
     )
+    expect(openInVSCodeURL("vscode://vscode-remote/ssh-remote+code-server/", "/home/sharp")).toBe(
+      "vscode://vscode-remote/ssh-remote+code-server/home/sharp?windowId=_blank",
+    )
+    expect(openInVSCodeURL("vscode://vscode-remote/ssh-remote+host?profile=work&windowId=1#frag", "/home/sharp")).toBe(
+      "vscode://vscode-remote/ssh-remote+host/home/sharp?profile=work&windowId=_blank#frag",
+    )
+  })
+
+  test("round trips directories through both url formats", () => {
+    for (const directory of ["/home/sharp/my project", "/home/sharp/a#b?c&d", "/home/sharp/ünïcødé/☃"]) {
+      const http = new URL(openInVSCodeURL("https://code.example.com/open", directory)!)
+      expect(http.searchParams.get("folder")).toBe(directory)
+
+      const vscode = openInVSCodeURL("vscode://vscode-remote/ssh-remote+code-server", directory)!
+      const path = vscode.slice("vscode://vscode-remote/ssh-remote+code-server".length, vscode.indexOf("?"))
+      expect(decodeURIComponent(path)).toBe(directory)
+    }
   })
 
   test("extracts api error message and fallback", () => {
     expect(errorMessage({ data: { message: "boom" } }, "fallback")).toBe("boom")
     expect(errorMessage(new Error("broken"), "fallback")).toBe("broken")
     expect(errorMessage("unknown", "fallback")).toBe("fallback")
+  })
+})
+
+describe("projectForSession", () => {
+  const gitProject = { id: "git-alpha", worktree: "/repo-alpha", sandboxes: ["/roots/mixed/repo-alpha", "/wt/feature"] }
+  const gitBeta = { id: "git-beta", worktree: "/repo-beta", sandboxes: ["/roots/mixed/repo-beta"] }
+  const workspaceProject = {
+    id: "feature:/roots/mixed",
+    worktree: "/roots/mixed",
+    sandboxes: ["/roots/mixed/repo-alpha", "/roots/mixed/repo-beta"],
+  }
+
+  const orders = [
+    ["git first", [gitProject, gitBeta, workspaceProject]],
+    ["workspace first", [workspaceProject, gitProject, gitBeta]],
+  ] as const
+
+  for (const [label, projects] of orders) {
+    test(`groups a member session under its workspace despite the shared git project id (${label})`, () => {
+      const member = session({ id: "s1", directory: "/roots/mixed/repo-alpha", projectID: "git-alpha" })
+      expect(projectForSession(member, [...projects])?.id).toBe(workspaceProject.id)
+    })
+
+    test(`groups unrelated member sessions under the same workspace (${label})`, () => {
+      const beta = session({ id: "s2", directory: "/roots/mixed/repo-beta", projectID: "git-beta" })
+      expect(projectForSession(beta, [...projects])?.id).toBe(workspaceProject.id)
+    })
+
+    test(`keeps source sessions on the source checkout (${label})`, () => {
+      const source = session({ id: "s3", directory: "/repo-alpha", projectID: "git-alpha" })
+      expect(projectForSession(source, [...projects])?.id).toBe(gitProject.id)
+    })
+
+    test(`keeps ordinary worktree sessions on the source checkout (${label})`, () => {
+      const worktree = session({ id: "s4", directory: "/wt/feature", projectID: "git-alpha" })
+      expect(projectForSession(worktree, [...projects])?.id).toBe(gitProject.id)
+    })
+  }
+
+  test("falls back to the project id when no project claims the directory", () => {
+    const detached = session({ id: "s5", directory: "/gone", projectID: "git-alpha" })
+    expect(projectForSession(detached, [gitProject, workspaceProject])?.id).toBe(gitProject.id)
   })
 })

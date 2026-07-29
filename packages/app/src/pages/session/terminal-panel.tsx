@@ -23,7 +23,6 @@ import { getTerminalHandoff, setTerminalHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
 
 export function TerminalPanel() {
-  const delays = [120, 240]
   const layout = useLayout()
   const terminal = useTerminal()
   const sdk = useSDK()
@@ -83,36 +82,12 @@ export function TerminalPanel() {
     ),
   )
 
-  const focus = (id: string) => {
-    focusTerminalById(id)
-
-    const frame = requestAnimationFrame(() => {
-      if (!opened()) return
-      if (terminal.active() !== id) return
-      focusTerminalById(id)
-    })
-
-    const timers = delays.map((ms) =>
-      window.setTimeout(() => {
-        if (!opened()) return
-        if (terminal.active() !== id) return
-        focusTerminalById(id)
-      }, ms),
-    )
-
-    return () => {
-      cancelAnimationFrame(frame)
-      for (const timer of timers) clearTimeout(timer)
-    }
-  }
-
   createEffect(
     on(
-      () => [opened(), terminal.active()] as const,
-      ([next, id]) => {
-        if (!next || !id) return
-        const stop = focus(id)
-        onCleanup(stop)
+      () => [opened(), terminal.active(), terminal.focusRequested(terminal.active())] as const,
+      ([next, id, requested]) => {
+        if (!next || !id || !requested) return
+        focusTerminalById(id)
       },
     ),
   )
@@ -287,7 +262,7 @@ export function TerminalPanel() {
                         icon="plus-small"
                         variant="ghost"
                         iconSize="large"
-                        onClick={() => terminal.new()}
+                        onClick={() => terminal.new({ focus: true })}
                         aria-label={language.t("command.terminal.new")}
                       />
                     </TooltipKeybind>
@@ -304,7 +279,7 @@ export function TerminalPanel() {
                           <div id={`terminal-wrapper-${id}`} class="absolute inset-0">
                             <Terminal
                               pty={pty()}
-                              autoFocus={opened()}
+                              autoFocus={terminal.focusRequested(id)}
                               onAutoFocus={() => terminal.consumeFocus(id)}
                               onConnect={() => markTerminalConnected(terminalRecoveryKey(pty()), id, ops.trim)}
                               onCleanup={ops.update}

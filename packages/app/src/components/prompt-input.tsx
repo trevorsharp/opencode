@@ -86,6 +86,8 @@ import type { ReferenceInfo } from "@opencode-ai/sdk/v2/client"
 export { createPromptInputHistory }
 export type { PromptInputControls, PromptInputHistory, PromptInputProps, PromptInputState, PromptInputSubmission }
 
+const LEGACY_COMPOSER_AGENT = "build"
+
 const EXAMPLES = [
   "prompt.example.1",
   "prompt.example.2",
@@ -1223,6 +1225,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       onAbort: props.onAbort,
       onSubmit: props.onSubmit,
       model: props.controls.model.selection,
+      agent: LEGACY_COMPOSER_AGENT,
     })
 
   const handleKeyDown = (event: KeyboardEvent) => {

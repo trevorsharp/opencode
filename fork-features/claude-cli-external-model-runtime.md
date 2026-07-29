@@ -51,6 +51,7 @@ The shared runtime is responsible for:
 - Converting external output into normal OpenCode model events.
 - Preserving event ordering and stable identities.
 - Connecting cancellation to process lifetime.
+- Settling a turn whose execution stops producing output.
 - Producing exactly one terminal settlement.
 - Preventing events after settlement.
 - Reporting failures through normal session behavior.
@@ -92,6 +93,8 @@ The runtime also preserves these restrictions:
 - Optional JSON schema supplied for structured-output requests.
 
 No additional environment restrictions, permission disclosures, or security policy are required beyond preserving this behavior.
+
+A turn that produces no output for five minutes is treated as stuck: the runtime terminates the process group and settles the turn as failed. Installations can widen or narrow that window with `provider["claude-cli"].options.chunkTimeout`, the same option other providers use for silent streams.
 
 ## Claude-Owned Tools
 

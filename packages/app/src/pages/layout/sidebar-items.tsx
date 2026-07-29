@@ -1,5 +1,4 @@
 import type { Session } from "@opencode-ai/sdk/v2/client"
-import { base64Encode } from "@opencode-ai/core/util/encode"
 import { Avatar } from "@opencode-ai/ui/avatar"
 import { Icon } from "@opencode-ai/ui/icon"
 import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
@@ -18,8 +17,7 @@ import { messageAgentColor } from "@/utils/agent"
 import { sessionTitle } from "@/utils/session-title"
 import { sessionPermissionRequest } from "../session/composer/session-request-tree"
 import { childSessionOnPath, getProjectAvatarSource, hasProjectPermissions } from "./helpers"
-import { pathKey } from "@/utils/path-key"
-import { cancelPendingProjectNavigation } from "@/utils/session-route"
+import { cancelPendingProjectNavigation, withWorkspaceRoot } from "@/utils/session-route"
 
 export const ProjectIcon = (props: {
   project: LocalProject
@@ -110,11 +108,9 @@ const SessionRow = (props: {
   warmFocus: () => void
 }): JSX.Element => {
   const title = () => sessionTitle(props.session.title)
-  const href = createMemo(() => {
-    const value = `/${props.slug}/session/${props.session.id}`
-    if (!props.root || pathKey(props.root) === pathKey(props.session.directory)) return value
-    return `${value}?root=${base64Encode(props.root)}`
-  })
+  const href = createMemo(() =>
+    withWorkspaceRoot(`/${props.slug}/session/${props.session.id}`, props.session.directory, props.root),
+  )
 
   return (
     <A
@@ -305,11 +301,11 @@ export const NewSessionItem = (props: {
   const language = useLanguage()
   const label = language.t("command.session.new")
   const tooltip = () => props.mobile || !props.sidebarExpanded()
-  const href = createMemo(() => {
-    const value = `/${props.slug}/session`
-    if (!props.root || !props.directory || pathKey(props.root) === pathKey(props.directory)) return value
-    return `${value}?root=${base64Encode(props.root)}`
-  })
+  const href = createMemo(() =>
+    props.directory
+      ? withWorkspaceRoot(`/${props.slug}/session`, props.directory, props.root)
+      : `/${props.slug}/session`,
+  )
   const item = (
     <A
       href={href()}

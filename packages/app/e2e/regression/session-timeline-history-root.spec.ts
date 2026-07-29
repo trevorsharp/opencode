@@ -16,6 +16,7 @@ import {
 import { mockOpenCodeServer } from "../utils/mock-server"
 import { installSseTransport } from "../utils/sse-transport"
 import { expectSessionTitle } from "../utils/waits"
+import { skipWhenViewportTunedToV2Chrome } from "../utils/legacy-layout-policy"
 
 const initialPageSize = 20
 const historyPageSize = 200
@@ -49,6 +50,14 @@ test.use({ viewport: { width: 646, height: 1385 } })
 
 for (const scenario of scenarios) {
   test(`keeps visible timeline content visible through ${scenario.name}`, async ({ page }) => {
+    // Appending the interruption divider grows the bottom-pinned timeline by 94px on both layouts,
+    // so the top row of the armed sample scrolls out unless it is tall enough to absorb the shift.
+    // The legacy composer leaves this pinned viewport 32px shorter than the v2 chrome does, which
+    // lands the shift mid-row; the scenario passes on legacy at a 32px taller viewport.
+    if (scenario.interrupted)
+      skipWhenViewportTunedToV2Chrome(
+        "the pinned 1385px viewport, which only clears the interruption divider's scroll shift under the v2 chrome",
+      )
     const requests: { before?: string; phase: "start" | "end" }[] = []
     const pages: { before?: string; limit: number }[] = []
     const roots: { sessionID: string; messageID: string }[] = []

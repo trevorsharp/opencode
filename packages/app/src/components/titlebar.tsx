@@ -29,7 +29,7 @@ import type { PromptSession } from "@/context/prompt"
 import "./titlebar.css"
 import { newTabTooltipKeybind } from "./command-tooltip-keybind"
 import { decode64 } from "@/utils/base64"
-import { cancelPendingProjectNavigation, legacyNewSessionHref } from "@/utils/session-route"
+import { cancelPendingProjectNavigation, legacyNewSessionHref, workspaceRootParam } from "@/utils/session-route"
 
 type TauriDesktopWindow = {
   startDragging?: () => Promise<void>
@@ -464,7 +464,6 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                   "md:pl-4": !mac(),
                 }}
               >
-                <ChannelIndicator />
                 <Show when={windows() || linux()}>
                   <WindowsAppMenu command={command} platform={platform} variant="v2" />
                 </Show>
@@ -621,7 +620,7 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                               const directory = decode64(params.dir)
                               if (!directory) return
                               cancelPendingProjectNavigation()
-                              navigate(legacyNewSessionHref(directory, location.search))
+                              navigate(legacyNewSessionHref(directory, workspaceRootParam(location.search)))
                             }}
                             aria-label={language.t("command.session.new")}
                             aria-current={creating() ? "page" : undefined}
@@ -665,7 +664,6 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                       </div>
                     </Show>
                     <div id="opencode-titlebar-left" class="flex items-center gap-3 min-w-0 px-2" />
-                    <ChannelIndicator />
                   </div>
                 </div>
               </div>
@@ -749,17 +747,5 @@ function TitlebarUpdateIconButton(props: { state: TitlebarUpdatePillState }) {
         </span>
       </button>
     </div>
-  )
-}
-
-function ChannelIndicator() {
-  return (
-    <>
-      {import.meta.env.VITE_OPENCODE_CHANNEL === "beta" && (
-        <div class="bg-icon-interactive-base text-[#FFF] font-medium px-2 rounded-sm uppercase font-mono">
-          {import.meta.env.VITE_OPENCODE_CHANNEL.toUpperCase()}
-        </div>
-      )}
-    </>
   )
 }

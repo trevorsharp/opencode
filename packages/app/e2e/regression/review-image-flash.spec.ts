@@ -2,6 +2,9 @@ import { expect, test, type Page } from "@playwright/test"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { mockOpenCodeServer } from "../utils/mock-server"
 import { expectAppVisible, expectSessionTitle } from "../utils/waits"
+import { skipWhenV2LayoutUnreachable } from "../utils/legacy-layout-policy"
+
+skipWhenV2LayoutUnreachable("the v2 review pane")
 
 const directory = "C:/OpenCode/ReviewImageFlashRegression"
 const sessionID = "ses_review_image_flash_regression"

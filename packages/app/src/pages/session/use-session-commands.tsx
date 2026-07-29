@@ -19,7 +19,7 @@ import { extractPromptFromParts } from "@/utils/prompt"
 import { UserMessage } from "@opencode-ai/sdk/v2"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { createSessionOwnership } from "./session-ownership"
-import { cancelPendingProjectNavigation, legacyNewSessionHref } from "@/utils/session-route"
+import { cancelPendingProjectNavigation, legacyNewSessionHref, workspaceRootParam } from "@/utils/session-route"
 
 export type SessionCommandContext = {
   navigateMessageByOffset: (offset: number) => void
@@ -427,7 +427,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
           return
         }
         cancelPendingProjectNavigation()
-        navigate(legacyNewSessionHref(sdk().directory, location.search))
+        navigate(legacyNewSessionHref(sdk().directory, workspaceRootParam(location.search)))
       },
     }),
     sessionCommand({

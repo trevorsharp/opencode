@@ -22,6 +22,7 @@ import { QueryClient, queryOptions } from "@tanstack/solid-query"
 import { loadMcpQuery, loadMcpResourcesQuery } from "../server-sync"
 import { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
 import { ScopedKey, type ServerScope } from "@/utils/server-scope"
+import { owningContainer } from "@/utils/project-owner"
 
 type GlobalStore = {
   ready: boolean
@@ -141,7 +142,7 @@ function groupBySession<T extends { id: string; sessionID: string }>(input: T[])
 }
 
 function projectID(directory: string, projects: Project[]) {
-  return projects.find((project) => project.worktree === directory || project.sandboxes?.includes(directory))?.id
+  return owningContainer(projects, directory)?.id
 }
 
 function mergeSession(setStore: SetStoreFunction<State>, session: Session) {

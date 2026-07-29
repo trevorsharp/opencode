@@ -1,7 +1,7 @@
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { type Accessor, createEffect, createMemo, onCleanup, onMount } from "solid-js"
-import { createStore } from "solid-js/store"
+import { createStore, produce } from "solid-js/store"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import { useLanguage } from "@/context/language"
 import { useSettings } from "@/context/settings"
@@ -13,6 +13,7 @@ const IS_MAC = typeof navigator === "object" && /(Mac|iPod|iPhone|iPad)/.test(na
 const PALETTE_ID = "command.palette"
 export const DEFAULT_PALETTE_KEYBIND = "mod+k,mod+shift+p"
 const SUGGESTED_PREFIX = "suggested."
+export const RETIRED_COMMAND_IDS = ["agent.cycle", "agent.cycle.reverse"]
 const EDITABLE_KEYBIND_IDS = new Set(["terminal.toggle", "terminal.new", "file.attach"])
 
 type KeyLabel =
@@ -39,6 +40,14 @@ function keyText(key: KeyLabel, t?: (key: KeyLabel) => string) {
 function actionId(id: string) {
   if (!id.startsWith(SUGGESTED_PREFIX)) return id
   return id.slice(SUGGESTED_PREFIX.length)
+}
+
+export function pruneRetiredCommands<T extends object>(draft: T, ids: readonly string[] = RETIRED_COMMAND_IDS) {
+  const record = draft as Record<string, unknown>
+  for (const id of ids) {
+    if (!Object.hasOwn(record, id)) continue
+    delete record[id]
+  }
 }
 
 function normalizeKey(key: string) {
@@ -315,6 +324,7 @@ export const { use: useCommand, provider: CommandProvider } = createSimpleContex
           return acc
         }, {} as CommandCatalog),
       )
+      setCatalog(produce((draft) => pruneRetiredCommands(draft)))
     })
 
     const catalogOptions = createMemo(() => Object.entries(catalog).map(([id, meta]) => ({ id, ...meta })))

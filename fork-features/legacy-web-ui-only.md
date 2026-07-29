@@ -30,6 +30,24 @@ Keep this fork exclusively on the legacy web application layout while retaining 
 - Keep the override separate from upstream transition machinery where possible so it remains easy to reapply or remove during rebasing.
 - Keep the v2 implementation present but prevent all normal activation paths.
 
+## Upstream Test Suite
+
+- Upstream end-to-end specs that drive v2 surfaces cannot pass while the policy is active, because
+  no profile reaches the v2 layout.
+- Such specs are kept, not deleted, adapted, or excluded by path, and are marked one at a time with
+  `skipWhenV2LayoutUnreachable` (`packages/app/e2e/utils/legacy-layout-policy.ts`), naming the v2
+  surface that is out of reach. The marker reads the same `legacyLayoutOnly` flag the runtime uses,
+  so dropping the policy restores the coverage automatically.
+- Mark a whole spec file only when every test in it targets v2; otherwise mark the individual tests.
+- A spec that reaches its surfaces on the legacy layout but pins a viewport calibrated to the v2
+  chrome is marked with `skipWhenViewportTunedToV2Chrome` instead, and only after confirming the
+  behavior matches v2 and that the spec passes on legacy once the viewport accounts for the chrome
+  height difference. Repinning the viewport would adapt the upstream spec and loosening the
+  assertion would drop coverage, so neither is done.
+- A spec that fails on the legacy layout for any other reason is a fork defect and is fixed rather
+  than marked. Each marker states the specific v2 surface or measurement involved, not the feature
+  the spec appears to cover, so a shared surface is never mislabeled as unreachable.
+
 ## Validation
 
 - Fresh profiles render the legacy layout.
@@ -40,6 +58,7 @@ Keep this fork exclusively on the legacy web application layout while retaining 
 - The layout switch and transition notices are absent.
 - No settings API or normal navigation path activates the v2 layout.
 - The retained v2 implementation continues to compile without fork-specific feature work.
+- The end-to-end suite reports every v2 spec as an explained skip and no unexplained failure.
 
 ## Non-Goals
 

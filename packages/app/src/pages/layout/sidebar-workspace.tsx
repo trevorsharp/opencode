@@ -53,6 +53,7 @@ export type WorkspaceSidebarContext = {
   setWorkspaceExpanded: (directory: string, value: boolean) => void
   showResetWorkspaceDialog: (root: string, directory: string) => void
   showRemoveFromWorkspaceDialog: (root: string, directory: string) => void
+  isWorkspaceMember: (root: string, directory: string) => boolean
   openRemoteVSCode: (directory: string) => void
   copyPath: (directory: string) => void
   canOpenRemoteVSCode: Accessor<boolean>
@@ -165,6 +166,7 @@ const WorkspaceActions = (props: {
   sidebarHovering: Accessor<boolean>
   language: ReturnType<typeof useLanguage>
   showRemoveFromWorkspaceDialog: WorkspaceSidebarContext["showRemoveFromWorkspaceDialog"]
+  removable: Accessor<boolean>
   ctx: WorkspaceSidebarContext
   root: string
   clearHoverProjectSoon: WorkspaceSidebarContext["clearHoverProjectSoon"]
@@ -200,24 +202,29 @@ const WorkspaceActions = (props: {
           <DropdownMenu.Item onSelect={() => props.ctx.copyPath(props.directory)}>
             <DropdownMenu.ItemLabel>{props.language.t("session.header.open.copyPath")}</DropdownMenu.ItemLabel>
           </DropdownMenu.Item>
-          <DropdownMenu.Separator />
-          <DropdownMenu.Item
-            onSelect={() => props.ctx.openRemoteVSCode(props.directory)}
-            disabled={!props.ctx.canOpenRemoteVSCode()}
-          >
-            <DropdownMenu.ItemLabel>
-              {props.language.t("session.header.open.ariaLabel", {
-                app: props.language.t("session.header.open.app.vscode"),
-              })}
-            </DropdownMenu.ItemLabel>
-          </DropdownMenu.Item>
-          <DropdownMenu.Separator />
-          <DropdownMenu.Item
-            disabled={props.local() || props.busy()}
-            onSelect={() => props.showRemoveFromWorkspaceDialog(props.root, props.directory)}
-          >
-            <DropdownMenu.ItemLabel>{props.language.t("workspace.removeFromWorkspace.menu")}</DropdownMenu.ItemLabel>
-          </DropdownMenu.Item>
+          <Show when={props.ctx.canOpenRemoteVSCode()}>
+            <DropdownMenu.Separator />
+            <DropdownMenu.Item
+              data-action="workspace-open-vscode"
+              data-workspace={base64Encode(props.directory)}
+              onSelect={() => props.ctx.openRemoteVSCode(props.directory)}
+            >
+              <DropdownMenu.ItemLabel>
+                {props.language.t("session.header.open.ariaLabel", {
+                  app: props.language.t("session.header.open.app.vscode"),
+                })}
+              </DropdownMenu.ItemLabel>
+            </DropdownMenu.Item>
+          </Show>
+          <Show when={props.removable()}>
+            <DropdownMenu.Separator />
+            <DropdownMenu.Item
+              disabled={props.local() || props.busy()}
+              onSelect={() => props.showRemoveFromWorkspaceDialog(props.root, props.directory)}
+            >
+              <DropdownMenu.ItemLabel>{props.language.t("workspace.removeFromWorkspace.menu")}</DropdownMenu.ItemLabel>
+            </DropdownMenu.Item>
+          </Show>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu>
@@ -342,6 +349,12 @@ export const SortableWorkspace = (props: {
   const hasMore = createMemo(() => workspaceStore.sessionTotal > sessions().length)
   const fetching = useIsFetching(() => queryOptions().sessions(pathKey(props.directory)))
   const busy = createMemo(() => props.ctx.isBusy(props.directory))
+  // The workspace CLI can only remove rows the inventory reports as workspace members, so an
+  // ordinary git worktree never offers removal.
+  const removable = createMemo(
+    () =>
+      props.project.id?.startsWith("feature:") || props.ctx.isWorkspaceMember(props.project.worktree, props.directory),
+  )
   const unseenCount = createMemo(() => notification.project.unseenCount(props.directory))
   const hasError = createMemo(() => notification.project.unseenHasError(props.directory))
   const loading = () => count() === 0 && (!workspaceStore.sessionLoaded || fetching() > 0)
@@ -448,6 +461,7 @@ export const SortableWorkspace = (props: {
             sidebarHovering={props.ctx.sidebarHovering}
             language={language}
             showRemoveFromWorkspaceDialog={props.ctx.showRemoveFromWorkspaceDialog}
+            removable={removable}
             ctx={props.ctx}
             root={props.project.worktree}
             clearHoverProjectSoon={props.ctx.clearHoverProjectSoon}

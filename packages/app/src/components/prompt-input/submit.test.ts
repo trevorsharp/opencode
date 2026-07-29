@@ -5,6 +5,8 @@ import type { ModelSelection } from "@/context/local"
 
 let createPromptSubmit: typeof import("./submit").createPromptSubmit
 
+const base64url = (value: string) => Buffer.from(value).toString("base64url")
+
 const createdClients: string[] = []
 const createdSessions: string[] = []
 const enabledAutoAccept: Array<{ server: string; sessionID: string; directory: string }> = []
@@ -26,7 +28,11 @@ const promotedDrafts: Array<{ draftID: string; server: string; sessionId: string
 
 let params: { id?: string } = {}
 let search: { draftId?: string } = {}
+let routerLocation: { search: string; hash: string } = { search: "", hash: "" }
+const navigations: string[] = []
 let selected = "/repo/worktree-a"
+let visibleAgents: { name: string }[] = [{ name: "plan" }, { name: "build" }]
+let knownAgents: { name: string }[] = [{ name: "plan" }, { name: "build" }]
 let variant: string | undefined
 let permissionServer = "server-a"
 let createSessionGate: Promise<void> | undefined
@@ -93,9 +99,11 @@ beforeAll(async () => {
   const rootClient = clientFor("/repo/main")
 
   mock.module("@solidjs/router", () => ({
-    useNavigate: () => () => undefined,
+    useNavigate: () => (href: string) => {
+      navigations.push(href)
+    },
     useParams: () => params,
-    useLocation: () => ({}),
+    useLocation: () => routerLocation,
     useSearchParams: () => [search, () => undefined],
   }))
 
@@ -112,7 +120,8 @@ beforeAll(async () => {
   }))
 
   mock.module("@opencode-ai/core/util/encode", () => ({
-    base64Encode: (value: string) => value,
+    base64Encode: (value: string) => Buffer.from(value).toString("base64url"),
+    base64Decode: (value: string) => Buffer.from(value, "base64url").toString(),
   }))
 
   mock.module("@/context/local", () => ({
@@ -123,6 +132,7 @@ beforeAll(async () => {
       },
       agent: {
         current: () => ({ name: "agent" }),
+        list: () => visibleAgents,
       },
       session: {
         promote(directory: string, sessionID: string) {
@@ -143,6 +153,7 @@ beforeAll(async () => {
 
   mock.module("@/context/server", () => ({
     useServer: () => ({ key: "server-key" }),
+    ServerConnection: { Key: { make: (value: string) => value } },
   }))
 
   mock.module("@/context/tabs", () => ({
@@ -183,7 +194,7 @@ beforeAll(async () => {
 
   mock.module("@/context/sync", () => ({
     useSync: () => () => ({
-      data: { command: [] },
+      data: { command: [], agent: knownAgents },
       session: {
         optimistic: {
           add: (value: {
@@ -258,9 +269,13 @@ beforeEach(() => {
   promotedDrafts.length = 0
   params = {}
   search = {}
+  routerLocation = { search: "", hash: "" }
+  navigations.length = 0
   sentShell.length = 0
   syncedDirectories.length = 0
   selected = "/repo/worktree-a"
+  visibleAgents = [{ name: "plan" }, { name: "build" }]
+  knownAgents = [{ name: "plan" }, { name: "build" }]
   variant = undefined
   permissionServer = "server-a"
   createSessionGate = undefined
@@ -429,6 +444,60 @@ describe("prompt submit worktree selection", () => {
     })
   })
 
+  test("submits the requested agent instead of the current selection", async () => {
+    params = { id: "session-1" }
+
+    const submit = createPromptSubmit({
+      prompt,
+      info: () => ({ id: "session-1" }),
+      imageAttachments: () => [],
+      commentCount: () => 0,
+      autoAccept: () => false,
+      mode: () => "normal",
+      working: () => false,
+      editor: () => undefined,
+      queueScroll: () => undefined,
+      promptLength: (value) => value.reduce((sum, part) => sum + ("content" in part ? part.content.length : 0), 0),
+      addToHistory: () => undefined,
+      resetHistoryNavigation: () => undefined,
+      setMode: () => undefined,
+      setPopover: () => undefined,
+      agent: "build",
+    })
+
+    await submit.handleSubmit({ preventDefault: () => undefined } as unknown as Event)
+
+    expect(optimistic[0]).toMatchObject({ message: { agent: "build" } })
+  })
+
+  test("submits the requested agent literally when configuration hides it", async () => {
+    params = { id: "session-1" }
+    visibleAgents = [{ name: "plan" }]
+    knownAgents = [{ name: "plan" }]
+
+    const submit = createPromptSubmit({
+      prompt,
+      info: () => ({ id: "session-1" }),
+      imageAttachments: () => [],
+      commentCount: () => 0,
+      autoAccept: () => false,
+      mode: () => "normal",
+      working: () => false,
+      editor: () => undefined,
+      queueScroll: () => undefined,
+      promptLength: (value) => value.reduce((sum, part) => sum + ("content" in part ? part.content.length : 0), 0),
+      addToHistory: () => undefined,
+      resetHistoryNavigation: () => undefined,
+      setMode: () => undefined,
+      setPopover: () => undefined,
+      agent: "build",
+    })
+
+    await submit.handleSubmit({ preventDefault: () => undefined } as unknown as Event)
+
+    expect(optimistic[0]).toMatchObject({ message: { agent: "build" } })
+  })
+
   test("uses an injected model selection", async () => {
     params = { id: "session-1" }
     const model = {
@@ -489,5 +558,63 @@ describe("prompt submit worktree selection", () => {
 
     expect(storedSessions["/repo/worktree-a"]).toEqual([{ id: "session-1", title: "New session 1" }])
     expect(optimisticSeeded).toEqual([true])
+  })
+
+  test("carries route state onto the created session route", async () => {
+    routerLocation = { search: `?root=${base64url("/repo/main")}&audit=retained`, hash: "#gate-fragment" }
+
+    const submit = createPromptSubmit({
+      prompt,
+      info: () => undefined,
+      imageAttachments: () => [],
+      commentCount: () => 0,
+      autoAccept: () => false,
+      mode: () => "normal",
+      working: () => false,
+      editor: () => undefined,
+      queueScroll: () => undefined,
+      promptLength: (value) => value.reduce((sum, part) => sum + ("content" in part ? part.content.length : 0), 0),
+      addToHistory: () => undefined,
+      resetHistoryNavigation: () => undefined,
+      setMode: () => undefined,
+      setPopover: () => undefined,
+      newSessionWorktree: () => selected,
+      onNewSessionWorktreeReset: () => undefined,
+      onSubmit: () => undefined,
+    })
+
+    await submit.handleSubmit({ preventDefault: () => undefined } as unknown as Event)
+
+    expect(navigations).toEqual([
+      `/${base64url("/repo/worktree-a")}/session/session-1?root=${base64url("/repo/main")}&audit=retained#gate-fragment`,
+    ])
+  })
+
+  test("omits a stale fragment the route no longer carries", async () => {
+    routerLocation = { search: "?audit=retained", hash: "" }
+
+    const submit = createPromptSubmit({
+      prompt,
+      info: () => undefined,
+      imageAttachments: () => [],
+      commentCount: () => 0,
+      autoAccept: () => false,
+      mode: () => "normal",
+      working: () => false,
+      editor: () => undefined,
+      queueScroll: () => undefined,
+      promptLength: (value) => value.reduce((sum, part) => sum + ("content" in part ? part.content.length : 0), 0),
+      addToHistory: () => undefined,
+      resetHistoryNavigation: () => undefined,
+      setMode: () => undefined,
+      setPopover: () => undefined,
+      newSessionWorktree: () => selected,
+      onNewSessionWorktreeReset: () => undefined,
+      onSubmit: () => undefined,
+    })
+
+    await submit.handleSubmit({ preventDefault: () => undefined } as unknown as Event)
+
+    expect(navigations).toEqual([`/${base64url("/repo/worktree-a")}/session/session-1?audit=retained`])
   })
 })

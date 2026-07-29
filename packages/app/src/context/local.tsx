@@ -215,20 +215,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           setStore("draft", next)
         })
       },
-      move(direction: 1 | -1) {
-        const items = list()
-        if (items.length === 0) {
-          setStore("current", undefined)
-          return
-        }
-
-        let next = items.findIndex((item) => item.name === agent.current()?.name) + direction
-        if (next < 0) next = items.length - 1
-        if (next >= items.length) next = 0
-        const item = items[next]
-        if (!item) return
-        agent.set(item.name)
-      },
     }
 
     const current = () => {

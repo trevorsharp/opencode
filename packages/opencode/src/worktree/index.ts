@@ -200,10 +200,20 @@ const layer: Layer.Layer<
       ),
     )
 
+    // The workspace CLI is a bun script, and bun reads bunfig.toml from its cwd.
+    // Inheriting the server's cwd therefore lets an unrelated project's preload
+    // fail the CLI before it parses its own arguments, which reads back as
+    // missing workspace information. Directory-independent commands (`info
+    // --workspace`, `list`) get opencode's own data directory instead, which
+    // never carries a bunfig.
     const workspace = Effect.fnUntraced(
       function* (args: string[], opts?: { cwd?: string; timeout?: Duration.Input }) {
         const command = appProcess.run(
-          ChildProcess.make("workspace", args, { cwd: opts?.cwd, extendEnv: true, stdin: "ignore" }),
+          ChildProcess.make("workspace", args, {
+            cwd: opts?.cwd ?? Global.Path.data,
+            extendEnv: true,
+            stdin: "ignore",
+          }),
         )
         const result = yield* opts?.timeout ? command.pipe(Effect.timeout(opts.timeout)) : command
         return {
@@ -743,8 +753,6 @@ const layer: Layer.Layer<
         return yield* new RemoveFailedError({ message: "Workspace folder belongs to another project" })
       }
 
-      if (!(yield* fs.exists(input.directory).pipe(Effect.orDie))) return { removed: true, featureRemoved: false }
-
       const worktrees = yield* git(["worktree", "list", "--porcelain"], { cwd: ctx.worktree })
       if (worktrees.code !== 0) {
         return yield* new RemoveFailedError({
@@ -753,6 +761,7 @@ const layer: Layer.Layer<
       }
       const entry = yield* locateGitWorktree(parseWorktreeList(worktrees.text), directory)
       if (!entry?.path) {
+        if (!(yield* fs.exists(input.directory).pipe(Effect.orDie))) return { removed: true, featureRemoved: false }
         return yield* new RemoveFailedError({ message: "Directory is not a managed git worktree" })
       }
 

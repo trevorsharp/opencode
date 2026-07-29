@@ -191,8 +191,6 @@ import type {
   SessionDeleteResponses,
   SessionDiffErrors,
   SessionDiffResponses,
-  SessionExternalTranscriptErrors,
-  SessionExternalTranscriptResponses,
   SessionForkErrors,
   SessionForkResponses,
   SessionGetErrors,
@@ -4383,109 +4381,6 @@ export class Session2 extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<SessionAgentCardResponses, SessionAgentCardErrors, ThrowOnError>({
       url: "/session/{sessionID}/agent-card",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
-   * Append external agent transcript
-   *
-   * Append a user prompt, assistant text, reasoning, tool call, or turn settlement produced by an external agent without invoking an OpenCode model. Entries sharing a runID accumulate into one assistant message that stays active until a finish entry arrives; entries without a runID settle their assistant message on arrival, matching the pre-runID contract.
-   */
-  public externalTranscript<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-      directory?: string
-      workspace?: string
-      body?:
-        | {
-            providerID: string
-            modelID: string
-            claudeSessionID?: string
-            runID?: string
-            type: "user"
-            text: string
-          }
-        | {
-            providerID: string
-            modelID: string
-            claudeSessionID?: string
-            runID?: string
-            type: "text"
-            text: string
-          }
-        | {
-            providerID: string
-            modelID: string
-            claudeSessionID?: string
-            runID?: string
-            type: "reasoning"
-            text: string
-          }
-        | {
-            providerID: string
-            modelID: string
-            claudeSessionID?: string
-            runID?: string
-            type: "tool"
-            callID: string
-            tool: string
-            input: {
-              [key: string]: unknown
-            }
-            status?: "running" | "completed" | "error"
-            title?: string
-            output?: string
-            error?: boolean
-          }
-        | {
-            providerID: string
-            modelID: string
-            claudeSessionID?: string
-            runID?: string
-            type: "finish"
-            finish?: string
-            aborted?: boolean
-            error?: string
-            cost?: number
-            tokens?: {
-              input: number
-              output: number
-              reasoning?: number
-              cache?: {
-                read: number
-                write: number
-              }
-            }
-          }
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "sessionID" },
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-            { key: "body", map: "body" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      SessionExternalTranscriptResponses,
-      SessionExternalTranscriptErrors,
-      ThrowOnError
-    >({
-      url: "/session/{sessionID}/external-transcript",
       ...options,
       ...params,
       headers: {

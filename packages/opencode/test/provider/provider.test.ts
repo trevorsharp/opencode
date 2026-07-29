@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
-import { mkdir, unlink } from "fs/promises"
+import { chmod, mkdir, mkdtemp, rm, unlink, writeFile } from "fs/promises"
+import { tmpdir } from "os"
 import path from "path"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -2056,4 +2057,41 @@ it.effect("opencode loader keeps paid models when auth exists", () =>
     expect(none).toBe(0)
     expect(keyedCount).toBeGreaterThan(0)
   }).pipe(provideMultiInstance),
+)
+
+/** A directory holding an executable stub named like the Claude CLI. */
+const claudeStub = () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => mkdtemp(path.join(tmpdir(), "claude-cli-")))
+    yield* Effect.addFinalizer(() => Effect.promise(() => rm(dir, { recursive: true, force: true })))
+    const executable = path.join(dir, "claude")
+    yield* Effect.promise(async () => {
+      await writeFile(executable, "#!/bin/sh\nexit 0\n")
+      await chmod(executable, 0o755)
+    })
+    return dir
+  })
+
+it.instance(
+  "claude-cli models stay hidden when the CLI cannot run, even with provider config",
+  Effect.gen(function* () {
+    yield* set("PATH", "/nonexistent")
+    const providers = yield* list
+    expect(providers[ProviderV2.ID.make("claude-cli")]).toBeUndefined()
+  }),
+  { config: { provider: { "claude-cli": { options: { chunkTimeout: 1000 } } } } },
+)
+
+it.instance(
+  "claude-cli models are offered when the CLI is installed and authenticated",
+  Effect.gen(function* () {
+    yield* set("PATH", yield* claudeStub())
+    yield* set("ANTHROPIC_API_KEY", "test-api-key")
+    const providers = yield* list
+    const provider = providers[ProviderV2.ID.make("claude-cli")]
+    expect(provider).toBeDefined()
+    expect(Object.keys(provider.models)).toEqual(["claude-fable-5", "claude-opus-5"])
+    expect(provider.options["chunkTimeout"]).toBe(1000)
+  }),
+  { config: { provider: { "claude-cli": { options: { chunkTimeout: 1000 } } } } },
 )
