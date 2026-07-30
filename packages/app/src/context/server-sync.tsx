@@ -36,7 +36,7 @@ import { queryOptions, useMutation, useQueries, useQuery, useQueryClient } from 
 import type { SolidQueryOptions } from "@tanstack/solid-query"
 import { createRefreshQueue } from "./global-sync/queue"
 import { directoryKey } from "./global-sync/utils"
-import { PathKey } from "@/utils/path-key"
+import { pathKey, type PathKey } from "@/utils/path-key"
 import { createDirSyncContext } from "./directory-sync"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
@@ -299,13 +299,35 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
   let bootingRoot = false
   let eventFrame: number | undefined
   let eventTimer: ReturnType<typeof setTimeout> | undefined
+  let projectRevision = 0
 
   onCleanup(() => {
     if (eventFrame !== undefined) cancelAnimationFrame(eventFrame)
     if (eventTimer !== undefined) clearTimeout(eventTimer)
   })
 
-  const setProjects = (next: Project[] | ((draft: Project[]) => Project[])) => {
+  const setProjects = (next: Project[] | ((draft: Project[]) => Project[]), preserveMissing = false) => {
+    if (Array.isArray(next)) {
+      const merged = new Map(next.map((project) => [project.id, project]))
+      for (const project of globalStore.project) {
+        const incoming = merged.get(project.id)
+        if (incoming && (project.time?.updated ?? 0) > (incoming.time?.updated ?? 0)) merged.set(project.id, project)
+        if (!incoming && preserveMissing) merged.set(project.id, project)
+      }
+      const unique = new Map<string, Project>()
+      for (const project of merged.values()) {
+        const key = pathKey(project.worktree) || project.id
+        const current = unique.get(key)
+        if (current && (current.time?.updated ?? 0) > (project.time?.updated ?? 0)) continue
+        unique.set(key, project)
+      }
+      setGlobalStore(
+        "project",
+        [...unique.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+      )
+      return
+    }
+    projectRevision += 1
     setGlobalStore("project", next)
   }
 
@@ -412,6 +434,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     }
 
     const limit = Math.max(retainedLimit + SESSION_RECENT_LIMIT, SESSION_RECENT_LIMIT)
+    if (store.session.length === 0) setStore("sessionLoaded", false)
     const promise = queryClient
       .fetchQuery({
         ...queryOptionsApi.sessions(key),
@@ -444,6 +467,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
                   }),
                 )
                 setStore("session", reconcile(next, { key: "id" }))
+                setStore("sessionLoaded", true)
               })
               sessionMeta.set(key, { limit })
             })
@@ -649,6 +673,12 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
 
   const projectApi = {
     loadSessions,
+    refresh() {
+      const revision = projectRevision
+      return queryClient.fetchQuery(loadProjectsQuery(serverSDK.scope, serverSDK.api.project)).then((data) => {
+        setProjects(data, projectRevision !== revision)
+      })
+    },
     meta(directory: string, patch: ProjectMeta) {
       children.projectMeta(directory, patch)
     },

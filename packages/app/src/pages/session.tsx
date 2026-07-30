@@ -99,7 +99,7 @@ import { diffs as list } from "@/utils/diffs"
 import { Persist, persisted } from "@/utils/persist"
 import { extractPromptFromParts } from "@/utils/prompt"
 import { formatServerError, isLocalSessionNotFoundError, isSessionNotFoundError } from "@/utils/server-errors"
-import { legacySessionHref, requireServerKey, sessionHref } from "@/utils/session-route"
+import { legacySessionHref, requireServerKey, sessionHref, workspaceRootParam } from "@/utils/session-route"
 import { useUsageExceededDialogs } from "./session/usage-exceeded-dialogs"
 import { createSessionOwnership } from "./session/session-ownership"
 import { createSessionLineage } from "./session/session-lineage"
@@ -145,10 +145,15 @@ async function runPromptRollbackMutation<T, R>(input: {
 }
 
 export function SessionPage() {
+  const params = useParams()
   return (
-    <SessionProviders>
-      <Page />
-    </SessionProviders>
+    <TerminalProvider>
+      <Show when={params.id ?? "new-session"} keyed>
+        <SessionProviders>
+          <Page />
+        </SessionProviders>
+      </Show>
+    </TerminalProvider>
   )
 }
 
@@ -279,9 +284,8 @@ function ResolvedTargetSessionRoute() {
   )
 }
 
-// Owns the workspace-identity remount. Must not include the session ID in the
-// key: SessionPage handles session changes reactively, and remounting here
-// destroys workspace-scoped state (terminal PTYs, file/prompt providers).
+// Owns the workspace-identity remount. SessionPage remounts session state while
+// preserving the workspace-scoped terminal across session changes.
 function TargetSessionPage() {
   const sdk = useSDK()
   const serverSDK = useServerSDK()
@@ -316,13 +320,11 @@ function MarkSessionNotificationsViewed(props: { sessionID?: () => string | unde
 
 function SessionProviders(props: ParentProps) {
   return (
-    <TerminalProvider>
-      <FileProvider>
-        <PromptProvider>
-          <CommentsProvider>{props.children}</CommentsProvider>
-        </PromptProvider>
-      </FileProvider>
-    </TerminalProvider>
+    <FileProvider>
+      <PromptProvider>
+        <CommentsProvider>{props.children}</CommentsProvider>
+      </PromptProvider>
+    </FileProvider>
   )
 }
 
@@ -577,7 +579,9 @@ export default function Page() {
   let restoredModelSession: string | undefined
   createEffect(() => {
     const id = params.id
-    if (!id || !prompt.ready() || !local.session.ready()) return
+    if (!id || !messagesReady() || !prompt.ready() || !local.session.ready()) return
+    const msg = lastUserMessage()
+    if (msg) syncSessionModel(local, msg)
     if (restoredModelSession !== id) {
       restoredModelSession = id
       if (restorePromptModel(local, prompt)) return
@@ -1985,14 +1989,18 @@ export default function Page() {
     consumePendingMessage: layout.pendingMessage.consume,
   })
 
-  createEffect(
-    on(
-      () => params.id,
-      (id) => {
-        if (!id) requestAnimationFrame(() => inputRef?.focus())
-      },
-    ),
-  )
+  const focusNewSessionInput = () => {
+    if (params.id) return
+    if (!prompt.ready()) return
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (params.id) return
+        inputRef?.focus()
+      })
+    })
+  }
+
+  createEffect(on(() => [sessionKey(), prompt.ready()] as const, focusNewSessionInput))
 
   onMount(() => {
     makeEventListener(document, "keydown", handleKeyDown)
@@ -2162,7 +2170,7 @@ export default function Page() {
               navigate(
                 params.serverKey
                   ? sessionHref(requireServerKey(params.serverKey), id)
-                  : legacySessionHref(sdk().directory, id),
+                  : legacySessionHref(sdk().directory, id, workspaceRootParam(location.search)),
               )
             },
             setPromptRef: (el) => {

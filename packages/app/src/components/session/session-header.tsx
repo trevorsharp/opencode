@@ -3,12 +3,10 @@ import { Button } from "@opencode-ai/ui/button"
 import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { Icon } from "@opencode-ai/ui/icon"
 import { IconButton } from "@opencode-ai/ui/icon-button"
-import { Keybind } from "@opencode-ai/ui/keybind"
 import { Spinner } from "@opencode-ai/ui/spinner"
 import { showToast } from "@/utils/toast"
 import { Tooltip, TooltipKeybind } from "@opencode-ai/ui/tooltip"
-import { getFilename } from "@opencode-ai/core/util/path"
-import { createEffect, createMemo, createSignal, For, onMount, Show } from "solid-js"
+import { createEffect, createMemo, For, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createMediaQuery } from "@solid-primitives/media"
 import { Portal } from "solid-js/web"
@@ -149,20 +147,8 @@ export function SessionHeader() {
   const { params, view } = useSessionLayout()
 
   const projectDirectory = createMemo(() => decode64(params.dir) ?? "")
-  const project = createMemo(() => {
-    const directory = projectDirectory()
-    if (!directory) return
-    return layout.projects.list().find((p) => p.worktree === directory || p.sandboxes?.includes(directory))
-  })
-  const name = createMemo(() => {
-    const current = project()
-    if (current) return current.name || getFilename(current.worktree)
-    return getFilename(projectDirectory())
-  })
-  const hotkey = createMemo(() => command.keybind("file.open"))
   const os = createMemo(() => detectOS(platform))
   const isV2 = settings.general.newLayoutDesigns
-  const search = settings.visibility.search
   const status = settings.visibility.status
   const isDesktop = createMediaQuery("(min-width: 768px)")
 
@@ -265,87 +251,20 @@ export function SessionHeader() {
       })
   }
 
-  const copyPath = () => {
-    const directory = projectDirectory()
-    if (!directory) return
-    navigator.clipboard
-      .writeText(directory)
-      .then(() => {
-        showToast({
-          variant: "success",
-          icon: "circle-check",
-          title: language.t("session.share.copy.copied"),
-          description: directory,
-        })
-      })
-      .catch((err: unknown) => showRequestError(language, err))
-  }
-
-  const [centerMount, setCenterMount] = createSignal<HTMLElement | null>(null)
   const rightMount = useTitlebarRightMount()
-  onMount(() => {
-    setCenterMount(document.getElementById("opencode-titlebar-center"))
-  })
 
   return (
     <>
-      <Show when={search() && centerMount()}>
-        {(mount) => (
-          <Portal mount={mount()}>
-            <Button
-              type="button"
-              variant="ghost"
-              size="small"
-              class="hidden md:flex w-[240px] max-w-full min-w-0 items-center gap-2 justify-between rounded-md border border-border-weak-base bg-surface-panel shadow-none cursor-default"
-              onClick={() => command.trigger("file.open")}
-              aria-label={language.t("session.header.searchFiles")}
-            >
-              <div class="flex min-w-0 flex-1 items-center overflow-visible">
-                <span class="flex-1 min-w-0 text-12-regular text-text-weak truncate text-left">
-                  {language.t("session.header.search.placeholder", {
-                    project: name(),
-                  })}
-                </span>
-              </div>
-
-              <Show when={hotkey()}>
-                {(keybind) => (
-                  <Keybind class="shrink-0 !border-0 !bg-transparent !shadow-none px-0 text-text-weaker">
-                    {keybind()}
-                  </Keybind>
-                )}
-              </Show>
-            </Button>
-          </Portal>
-        )}
-      </Show>
       <Show when={rightMount()}>
         {(mount) => (
           <Portal mount={mount()}>
             <Show
-              when={isV2}
+              when={isV2()}
               fallback={
                 <div class="flex items-center gap-2">
                   <Show when={projectDirectory()}>
                     <div class="hidden xl:flex items-center">
-                      <Show
-                        when={canOpen()}
-                        fallback={
-                          <div class="flex h-[24px] box-border items-center rounded-md border border-border-weak-base bg-surface-panel overflow-hidden">
-                            <Button
-                              variant="ghost"
-                              class="rounded-none h-full py-0 pr-3 pl-0.5 gap-1.5 border-none shadow-none"
-                              onClick={copyPath}
-                              aria-label={language.t("session.header.open.copyPath")}
-                            >
-                              <Icon name="copy" size="small" class="text-icon-base" />
-                              <span class="text-12-regular text-text-strong">
-                                {language.t("session.header.open.copyPath")}
-                              </span>
-                            </Button>
-                          </div>
-                        }
-                      >
+                      <Show when={canOpen()}>
                         <div class="flex items-center">
                           <div class="flex h-[24px] box-border items-center rounded-md border border-border-weak-base bg-surface-panel overflow-hidden">
                             <Button
@@ -417,20 +336,6 @@ export function SessionHeader() {
                                       </For>
                                     </DropdownMenu.RadioGroup>
                                   </DropdownMenu.Group>
-                                  <DropdownMenu.Separator />
-                                  <DropdownMenu.Item
-                                    onSelect={() => {
-                                      setMenu("open", false)
-                                      copyPath()
-                                    }}
-                                  >
-                                    <div class="flex size-5 shrink-0 items-center justify-center">
-                                      <Icon name="copy" size="small" class="text-icon-weak" />
-                                    </div>
-                                    <DropdownMenu.ItemLabel>
-                                      {language.t("session.header.open.copyPath")}
-                                    </DropdownMenu.ItemLabel>
-                                  </DropdownMenu.Item>
                                 </DropdownMenu.Content>
                               </DropdownMenu.Portal>
                             </DropdownMenu>

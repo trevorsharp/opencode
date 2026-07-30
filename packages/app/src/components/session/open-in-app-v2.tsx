@@ -1,6 +1,5 @@
 import { For, Show } from "solid-js"
 import { AppIcon } from "@opencode-ai/ui/app-icon"
-import { Icon } from "@opencode-ai/ui/icon"
 import { Spinner } from "@opencode-ai/ui/spinner"
 import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
 import { MenuV2 } from "@opencode-ai/ui/v2/menu-v2"
@@ -79,16 +78,6 @@ export function OpenInAppV2(props: { directory: () => string }) {
                   </For>
                 </MenuV2.RadioGroup>
               </MenuV2.Group>
-              <MenuV2.Separator />
-              <MenuV2.Item
-                onSelect={() => {
-                  state.setMenu("open", false)
-                  state.copyPath()
-                }}
-              >
-                <Icon name="copy" size="small" class="text-icon-weak" />
-                {language.t("session.header.open.copyPath")}
-              </MenuV2.Item>
             </MenuV2.Content>
           </MenuV2.Portal>
         </MenuV2>

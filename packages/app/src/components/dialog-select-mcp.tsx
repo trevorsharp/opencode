@@ -10,7 +10,6 @@ const statusLabels = {
   connected: "mcp.status.connected",
   failed: "mcp.status.failed",
   needs_auth: "mcp.status.needs_auth",
-  needs_client_registration: "mcp.status.needs_client_registration",
   disabled: "mcp.status.disabled",
 } as const
 
@@ -51,6 +50,7 @@ export const DialogSelectMcp: Component = () => {
           const mcpStatus = () => sync().data.mcp[i.name]
           const status = () => mcpStatus()?.status
           const statusLabel = () => {
+            if (status() === "needs_client_registration") return "needs client registration"
             const key = status() ? statusLabels[status() as keyof typeof statusLabels] : undefined
             if (!key) return
             return language.t(key)

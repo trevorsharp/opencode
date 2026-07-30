@@ -2,6 +2,12 @@ import { createStore, reconcile } from "solid-js/store"
 import { batch, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { persisted } from "@/utils/persist"
+import {
+  layoutPreferenceWritable,
+  resolveLayoutAnnouncementPolicy,
+  resolveLayoutPolicy,
+  resolveLayoutTransitionPolicy,
+} from "@/context/legacy-layout"
 import { usePlatform } from "@/context/platform"
 
 export interface NotificationSettings {
@@ -56,7 +62,7 @@ export interface Settings {
 
 export const monoDefault = "System Mono"
 export const sansDefault = "System Sans"
-export const terminalDefault = "JetBrainsMono Nerd Font Mono"
+export const terminalDefault = monoDefault
 const legacyNewLayoutDesignsDefault = import.meta.env.VITE_OPENCODE_CHANNEL !== "prod"
 export const newLayoutDesignsDefault = true
 // Existing users can switch layouts until local midnight on this date. Set new Date(YYYY, M-1, D) to show.
@@ -134,8 +140,7 @@ export function resolveNewLayoutDesigns(retired: boolean, preference: boolean | 
 const monoFallback =
   'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace'
 const sansFallback = 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
-const terminalFallback =
-  '"JetBrainsMono Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace'
+const terminalFallback = monoFallback
 
 const monoBase = monoFallback
 const sansBase = sansFallback
@@ -258,9 +263,16 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
         : false,
     )
     const layoutTransition = createMemo(() =>
-      layoutTransitionState(!!sunset, layoutTransitionEligible(), oldInterfaceRetired(), newInterfaceNoticeDismissed()),
+      resolveLayoutTransitionPolicy(
+        layoutTransitionState(
+          !!sunset,
+          layoutTransitionEligible(),
+          oldInterfaceRetired(),
+          newInterfaceNoticeDismissed(),
+        ),
+      ),
     )
-    const newLayoutDesigns = createMemo(() => {
+    const upstreamNewLayoutDesigns = createMemo(() => {
       if (layoutUpgrade()) return true
       if (!ready() && !oldInterfaceRetired()) return legacyNewLayoutDesignsDefault
       if (!layoutTransitionClassified()) {
@@ -276,6 +288,7 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
         layoutTransitionEligible() ? legacyNewLayoutDesignsDefault : newLayoutDesignsDefault,
       )
     })
+    const newLayoutDesigns = createMemo(() => resolveLayoutPolicy(upstreamNewLayoutDesigns()))
     const visible = (preference: () => boolean) => createMemo(() => !newLayoutDesigns() || preference())
     const initializeAgentVisibility = (existing: boolean) => {
       const initial = initialAgentVisibility(store.general?.agentVisibilityInitialized, existing, launchState.previous)
@@ -430,6 +443,7 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
         },
         newLayoutDesigns,
         setNewLayoutDesigns(value: boolean) {
+          if (!layoutPreferenceWritable()) return
           const next = oldInterfaceRetired() ? true : value
           if (newLayoutDesigns() === next) return
           setStore("general", "newLayoutDesigns", next)
@@ -447,7 +461,9 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
         dismissNewInterfaceNotice() {
           setStore("general", "newInterfaceNoticeDismissed", true)
         },
-        shouldDisplayTabsToast: withFallback(() => store.general?.shouldDisplayTabsToast, false),
+        shouldDisplayTabsToast: createMemo(() =>
+          resolveLayoutAnnouncementPolicy(store.general?.shouldDisplayTabsToast ?? false),
+        ),
         dismissTabsToast() {
           setStore("general", "shouldDisplayTabsToast", false)
         },

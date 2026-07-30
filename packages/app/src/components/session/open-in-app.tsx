@@ -199,22 +199,6 @@ export function useOpenInApp(input: { directory: () => string }) {
       })
   }
 
-  const copyPath = () => {
-    const directory = input.directory()
-    if (!directory) return
-    navigator.clipboard
-      .writeText(directory)
-      .then(() => {
-        showToast({
-          variant: "success",
-          icon: "circle-check",
-          title: language.t("session.share.copy.copied"),
-          description: directory,
-        })
-      })
-      .catch((err: unknown) => showRequestError(language, err))
-  }
-
   return {
     canOpen,
     opening,
@@ -224,6 +208,5 @@ export function useOpenInApp(input: { directory: () => string }) {
     setMenu,
     openDir,
     selectApp,
-    copyPath,
   }
 }

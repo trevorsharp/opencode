@@ -1,4 +1,4 @@
-import { useNavigate } from "@solidjs/router"
+import { useLocation, useNavigate } from "@solidjs/router"
 import { useCommand, type CommandOption } from "@/context/command"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { previewSelectedLines } from "@opencode-ai/session-ui/pierre/selection-bridge"
@@ -19,6 +19,7 @@ import { UserMessage } from "@opencode-ai/sdk/v2"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { createSessionOwnership } from "./session-ownership"
 import { useLocal } from "@/context/local"
+import { cancelPendingProjectNavigation, legacyNewSessionHref, workspaceRootParam } from "@/utils/session-route"
 
 export type SessionCommandContext = {
   navigateMessageByOffset: (offset: number) => void
@@ -48,6 +49,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   const terminal = useTerminal()
   const layout = useLayout()
   const local = useLocal()
+  const location = useLocation()
   const navigate = useNavigate()
   const { params, sessionKey, tabs, view } = useSessionLayout()
   const sessionOwnership = createSessionOwnership(sessionKey)
@@ -423,7 +425,8 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
           command.trigger("tab.new", source)
           return
         }
-        navigate(`/${params.dir}/session`)
+        cancelPendingProjectNavigation()
+        navigate(legacyNewSessionHref(sdk().directory, workspaceRootParam(location.search)))
       },
     }),
     sessionCommand({

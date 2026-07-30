@@ -79,7 +79,44 @@ const notify: Platform["notify"] = async (title, description, href) => {
 }
 
 const openLink: Platform["openLink"] = (url) => {
-  window.open(url, "_blank")
+  window.open(url, "_blank", "noopener,noreferrer")
+}
+
+const openExternalLinksInNewTabs = () => {
+  document.addEventListener(
+    "click",
+    (event) => {
+      if (event.defaultPrevented) return
+      if (event.button !== 0) return
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+
+      const target =
+        event.target instanceof Element
+          ? event.target
+          : event.target instanceof Node
+            ? event.target.parentElement
+            : null
+      const anchor = target?.closest("a[href]")
+      if (!(anchor instanceof HTMLAnchorElement)) return
+      if (anchor.hasAttribute("download")) return
+
+      const href = anchor.href
+      if (!href) return
+
+      try {
+        const url = new URL(href, window.location.href)
+        if (url.protocol !== "http:" && url.protocol !== "https:") return
+        if (url.origin === window.location.origin) return
+      } catch {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+      openLink(href)
+    },
+    true,
+  )
 }
 
 const back: Platform["back"] = () => {
@@ -133,6 +170,8 @@ const platform: Platform = {
   },
   setDefaultServer: writeDefaultServerUrl,
 }
+
+openExternalLinksInNewTabs()
 
 if (import.meta.env.VITE_SENTRY_DSN) {
   Sentry.init({

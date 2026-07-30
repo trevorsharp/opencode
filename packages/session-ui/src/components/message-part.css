@@ -215,6 +215,10 @@
   }
 }
 
+html[data-theme="trs"] [data-component="user-message"] [data-slot="user-message-text"] [data-highlight="file"] {
+  color: #90caff;
+}
+
 [data-component="text-part"] {
   width: 100%;
   margin-top: 24px;
@@ -360,6 +364,76 @@
     [data-component="markdown"] {
       overflow: visible;
     }
+  }
+}
+
+[data-component="generic-tool-details"] {
+  [data-component="tool-section"] {
+    width: 100%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+
+    [data-slot="tool-section-label"] {
+      color: var(--v2-text-text-muted);
+      font-family: var(--font-family-sans);
+      font-size: 11px;
+      font-weight: var(--font-weight-medium);
+      line-height: var(--line-height-normal);
+      letter-spacing: var(--letter-spacing-normal);
+    }
+  }
+
+  [data-component="tool-arguments"],
+  [data-component="tool-output"] {
+    width: 100%;
+    border: 0.5px solid var(--v2-border-border-base);
+    border-radius: 6px;
+    background: transparent;
+  }
+
+  [data-component="tool-arguments"] {
+    overflow: hidden;
+
+    [data-slot="tool-arguments-scroll"] {
+      width: 100%;
+      max-height: 240px;
+      overflow: auto;
+      scrollbar-width: thin;
+    }
+
+    [data-slot="tool-arguments-pre"] {
+      margin: 0;
+      padding: 12px;
+    }
+  }
+
+  [data-component="tool-output"] {
+    margin-bottom: 0;
+    padding: 12px;
+    white-space: normal;
+    overflow: auto;
+    scrollbar-width: thin;
+
+    > pre {
+      min-width: 100%;
+      width: max-content;
+    }
+  }
+
+  [data-component="tool-arguments"] code,
+  [data-component="tool-output"] code {
+    font-family: var(--font-family-mono);
+    font-feature-settings: var(--font-family-mono--font-feature-settings);
+    font-size: 13px;
+    line-height: var(--line-height-large);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  [data-component="tool-section"] + [data-component="tool-section"] {
+    margin-top: 8px;
   }
 }
 
@@ -1426,6 +1500,17 @@ body:not([data-new-layout]) {
 
   [data-component="bash-output"] {
     border: 1px solid var(--border-weak-base);
+  }
+
+  [data-component="generic-tool-details"] {
+    [data-component="tool-arguments"],
+    [data-component="tool-output"] {
+      border: 1px solid var(--border-weak-base);
+    }
+
+    [data-slot="tool-section-label"] {
+      color: var(--text-weak);
+    }
   }
 
   [data-component="edit-trigger"],

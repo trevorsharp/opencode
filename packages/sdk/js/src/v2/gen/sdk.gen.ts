@@ -177,6 +177,8 @@ import type {
   QuestionV2Reply,
   SessionAbortErrors,
   SessionAbortResponses,
+  SessionAgentCardErrors,
+  SessionAgentCardResponses,
   SessionChildrenErrors,
   SessionChildrenResponses,
   SessionCommandErrors,
@@ -4323,6 +4325,69 @@ export class Session2 extends HeyApiClient {
       url: "/session/{sessionID}/unrevert",
       ...options,
       ...params,
+    })
+  }
+
+  /**
+   * Upsert agent card
+   *
+   * Create or update an agent card linking to a child session, without triggering an LLM turn. Lets orchestrators (e.g. workflow plugins) surface programmatically-spawned agents in the parent conversation. Omit messageID/partID to create the card; pass the returned IDs to update its status.
+   */
+  public agentCard<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      childSessionID?: string
+      description?: string
+      agent?: string
+      model?: string
+      prompt?: string
+      status?: "pending" | "running" | "completed" | "error"
+      output?: string
+      error?: string
+      tool?: string
+      metadata?: {
+        [key: string]: unknown
+      }
+      messageID?: string
+      partID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "childSessionID" },
+            { in: "body", key: "description" },
+            { in: "body", key: "agent" },
+            { in: "body", key: "model" },
+            { in: "body", key: "prompt" },
+            { in: "body", key: "status" },
+            { in: "body", key: "output" },
+            { in: "body", key: "error" },
+            { in: "body", key: "tool" },
+            { in: "body", key: "metadata" },
+            { in: "body", key: "messageID" },
+            { in: "body", key: "partID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionAgentCardResponses, SessionAgentCardErrors, ThrowOnError>({
+      url: "/session/{sessionID}/agent-card",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 }

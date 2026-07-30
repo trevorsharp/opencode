@@ -60,7 +60,7 @@ export const ToolListQuery = Schema.Struct({
   model: ModelV2.ID,
 })
 
-const WorktreeList = Schema.Array(Schema.String)
+const WorktreeList = Schema.Array(Worktree.Info)
 const WorktreeErrorName = Schema.Union([
   Schema.Literal("WorktreeNotGitError"),
   Schema.Literal("WorktreeNameGenerationFailedError"),
@@ -200,7 +200,7 @@ export const ExperimentalApi = HttpApi.make("experimental")
         HttpApiEndpoint.delete("worktreeRemove", ExperimentalPaths.worktree, {
           query: WorkspaceRoutingQuery,
           payload: Worktree.RemoveInput,
-          success: described(Schema.Boolean, "Worktree removed"),
+          success: described(Worktree.RemoveResult, "Worktree removed"),
           error: WorktreeApiError,
         }).annotateMerge(
           OpenApi.annotations({

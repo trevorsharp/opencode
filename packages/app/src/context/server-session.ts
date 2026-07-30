@@ -85,6 +85,44 @@ function legacyMessageSource(items: { info: Message; parts: Part[] }[]): Session
     })
 }
 
+function activeBackgroundSessionOwners(
+  info: Record<string, Session | undefined>,
+  statuses: Record<string, SessionStatus | undefined>,
+) {
+  const owners = new Set<string>()
+  for (const [activeID, status] of Object.entries(statuses)) {
+    if (!status || status.type === "idle") continue
+    const visited = new Set<string>()
+    let current = info[activeID]
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id)
+      const owner = current.metadata?.parentSessionId
+      if (current.metadata?.background === true && typeof owner === "string") owners.add(owner)
+      current = current.parentID ? info[current.parentID] : undefined
+    }
+  }
+  return owners
+}
+
+function activeWorkflowCardOwners(parts: Record<string, Part[] | undefined>) {
+  const owners = new Set<string>()
+  for (const items of Object.values(parts)) {
+    for (const part of items ?? []) {
+      if (!part || part.type !== "tool" || part.tool !== "workflow") continue
+      if (part.state.status === "pending" || part.state.status === "running") owners.add(part.sessionID)
+    }
+  }
+  return owners
+}
+
+export function sessionHasActiveBackgroundDescendant(
+  sessionID: string,
+  info: Record<string, Session | undefined>,
+  statuses: Record<string, SessionStatus | undefined>,
+) {
+  return activeBackgroundSessionOwners(info, statuses).has(sessionID)
+}
+
 // Most markers describe the current HTTP attempt; deltaParts persists non-durable stream state across retries.
 type MessageLoadState = {
   touchedMessages: Set<string>
@@ -196,6 +234,7 @@ export function createServerSession(
   const [data, setData] = createStore({
     info: {} as Record<string, Session | undefined>,
     session_status: {} as Record<string, SessionStatus>,
+    background_working: {} as Record<string, true | undefined>,
     session_diff: {} as Record<string, FileDiffInfo[]>,
     todo: {} as Record<string, Todo[]>,
     permission: {} as Record<string, PermissionRequest[]>,
@@ -207,7 +246,37 @@ export function createServerSession(
     session_working(id: string) {
       return (this.session_status[id]?.type ?? "idle") !== "idle"
     },
+    session_background_working(id: string) {
+      return this.background_working[id] ?? false
+    },
   })
+  const syncBackgroundWorking = () => {
+    const owners = activeBackgroundSessionOwners(data.info, data.session_status)
+    for (const owner of activeWorkflowCardOwners(data.part)) owners.add(owner)
+    setData(
+      "background_working",
+      produce((draft) => {
+        for (const sessionID of Object.keys(draft)) {
+          if (!owners.has(sessionID)) delete draft[sessionID]
+        }
+        for (const sessionID of owners) draft[sessionID] = true
+      }),
+    )
+  }
+  let backgroundSyncPending = false
+  const scheduleBackgroundWorkingSync = () => {
+    if (backgroundSyncPending) return
+    backgroundSyncPending = true
+    queueMicrotask(() => {
+      backgroundSyncPending = false
+      syncBackgroundWorking()
+    })
+  }
+  const set = ((...input: unknown[]) => {
+    const result = (setData as (...args: unknown[]) => unknown)(...input)
+    if (input[0] === "info" || input[0] === "session_status" || input[0] === "part") scheduleBackgroundWorkingSync()
+    return result
+  }) as typeof setData
   const requests = new Map<string, Promise<Session>>()
   const inflight = new Map<string, Promise<void>>()
   const inflightTodo = new Map<string, Promise<void>>()
@@ -259,6 +328,7 @@ export function createServerSession(
 
   const remember = (session: Session) => {
     setData("info", session.id, reconcile(session))
+    scheduleBackgroundWorkingSync()
     infoSeen.delete(session.id)
     infoSeen.add(session.id)
     if (infoSeen.size > sessionInfoLimit) {
@@ -500,6 +570,7 @@ export function createServerSession(
         dropSessionCaches(draft, sessionIDs)
       }),
     )
+    scheduleBackgroundWorkingSync()
     setMeta(
       produce((draft) => {
         for (const sessionID of sessionIDs) {
@@ -615,6 +686,7 @@ export function createServerSession(
         for (const message of dropped) deleteMessageParts(draft, message.id)
       }),
     )
+    scheduleBackgroundWorkingSync()
     return messageIDs
   }
 
@@ -670,6 +742,7 @@ export function createServerSession(
       setData("part", item.id, reconcile(parts, { key: "id" }))
       orphanParts.get(sessionID)?.delete(item.id)
     }
+    scheduleBackgroundWorkingSync()
   }
 
   const applyMessagePage = (
@@ -1026,6 +1099,7 @@ export function createServerSession(
       case "session.status": {
         const props = event.properties as { sessionID: string; status: SessionStatus }
         setData("session_status", props.sessionID, reconcile(props.status))
+        scheduleBackgroundWorkingSync()
         return
       }
       case "message.updated": {
@@ -1090,6 +1164,7 @@ export function createServerSession(
             deleteMessageParts(draft, props.messageID)
           }),
         )
+        scheduleBackgroundWorkingSync()
         return
       }
       case "message.part.updated": {
@@ -1138,6 +1213,7 @@ export function createServerSession(
         const parts = data.part[part.messageID]
         if (!parts) {
           setData("part", part.messageID, [part])
+          scheduleBackgroundWorkingSync()
           return
         }
         const result = Binary.search(parts, part.id, (item) => item.id)
@@ -1148,6 +1224,7 @@ export function createServerSession(
             next.splice(result.index, 0, part)
             return next
           })
+        scheduleBackgroundWorkingSync()
         return
       }
       case "message.part.removed": {
@@ -1186,6 +1263,7 @@ export function createServerSession(
             if (parts.length === 0) delete draft.part[props.messageID]
           }),
         )
+        scheduleBackgroundWorkingSync()
         return
       }
       case "message.part.delta": {
@@ -1296,7 +1374,7 @@ export function createServerSession(
 
   return {
     data,
-    set: setData,
+    set,
     get: (sessionID: string) => data.info[sessionID],
     peek: (sessionID: string) => data.info[sessionID],
     remember,

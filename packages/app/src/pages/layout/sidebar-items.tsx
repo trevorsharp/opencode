@@ -17,6 +17,7 @@ import { messageAgentColor } from "@/utils/agent"
 import { sessionTitle } from "@/utils/session-title"
 import { sessionPermissionRequest } from "../session/composer/session-request-tree"
 import { childSessionOnPath, getProjectAvatarSource, hasProjectPermissions } from "./helpers"
+import { cancelPendingProjectNavigation, withWorkspaceRoot } from "@/utils/session-route"
 
 export const ProjectIcon = (props: {
   project: LocalProject
@@ -78,6 +79,7 @@ export type SessionItemProps = {
   list: Session[]
   navList?: Accessor<Session[]>
   slug: string
+  root?: string
   mobile?: boolean
   dense?: boolean
   showTooltip?: boolean
@@ -92,6 +94,7 @@ export type SessionItemProps = {
 const SessionRow = (props: {
   session: Session
   slug: string
+  root?: string
   mobile?: boolean
   dense?: boolean
   tint: Accessor<string | undefined>
@@ -105,14 +108,18 @@ const SessionRow = (props: {
   warmFocus: () => void
 }): JSX.Element => {
   const title = () => sessionTitle(props.session.title)
+  const href = createMemo(() =>
+    withWorkspaceRoot(`/${props.slug}/session/${props.session.id}`, props.session.directory, props.root),
+  )
 
   return (
     <A
-      href={`/${props.slug}/session/${props.session.id}`}
+      href={href()}
       class={`flex items-center gap-2 min-w-0 w-full text-left focus:outline-none ${props.dense ? "py-0.5" : "py-1"}`}
       onPointerDown={props.warmPress}
       onFocus={props.warmFocus}
       onClick={() => {
+        cancelPendingProjectNavigation()
         if (props.sidebarOpened()) return
         props.clearHoverProjectSoon()
       }}
@@ -152,7 +159,7 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
   const serverSync = useServerSync()
   const unseenCount = createMemo(() => notification.session.unseenCount(props.session.id))
   const hasError = createMemo(() => notification.session.unseenHasError(props.session.id))
-  const [sessionStore] = serverSync().child(props.session.directory)
+  const [sessionStore] = serverSync().child(props.session.directory, { bootstrap: false })
   const hasPermissions = createMemo(() => {
     return !!sessionPermissionRequest(
       sessionStore.session,
@@ -165,7 +172,8 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
   })
   const isWorking = createMemo(() => {
     if (hasPermissions()) return false
-    return serverSync().session.data.session_working(props.session.id)
+    const data = serverSync().session.data
+    return data.session_working(props.session.id) || data.session_background_working(props.session.id)
   })
 
   const tint = createMemo(() =>
@@ -201,6 +209,7 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
     <SessionRow
       session={props.session}
       slug={props.slug}
+      root={props.root}
       mobile={props.mobile}
       dense={props.dense}
       tint={tint}
@@ -281,6 +290,8 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
 
 export const NewSessionItem = (props: {
   slug: string
+  directory?: string
+  root?: string
   mobile?: boolean
   dense?: boolean
   sidebarExpanded: Accessor<boolean>
@@ -290,12 +301,18 @@ export const NewSessionItem = (props: {
   const language = useLanguage()
   const label = language.t("command.session.new")
   const tooltip = () => props.mobile || !props.sidebarExpanded()
+  const href = createMemo(() =>
+    props.directory
+      ? withWorkspaceRoot(`/${props.slug}/session`, props.directory, props.root)
+      : `/${props.slug}/session`,
+  )
   const item = (
     <A
-      href={`/${props.slug}/session`}
+      href={href()}
       end
       class={`flex items-center gap-2 min-w-0 w-full text-left focus:outline-none ${props.dense ? "py-0.5" : "py-1"}`}
       onClick={() => {
+        cancelPendingProjectNavigation()
         if (layout.sidebar.opened()) return
         props.clearHoverProjectSoon()
       }}

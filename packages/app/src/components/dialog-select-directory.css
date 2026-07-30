@@ -1,0 +1,36 @@
+.workspace-create-dialog {
+  min-height: 0 !important;
+}
+
+[data-component="dialog"]:has(.workspace-create-dialog) [data-slot="dialog-container"] {
+  width: min(calc(100vw - 32px), 480px);
+  height: auto;
+}
+
+.workspace-create-dialog [data-slot="dialog-body"] {
+  flex: 0;
+  overflow: visible;
+}
+
+.directory-select-dialog {
+  min-height: 360px !important;
+}
+
+.directory-select-dialog [data-component="list"] {
+  flex: 1;
+}
+
+.directory-select-dialog [data-slot="list-scroll"] {
+  flex: 1;
+}
+
+.directory-select-footer {
+  margin-top: auto;
+}
+
+.workspace-create-dialog
+  [data-component="input"][data-variant="normal"]
+  [data-slot="input-wrapper"]:focus-within:not(:has([data-readonly])) {
+  border-color: var(--border-weak-base);
+  box-shadow: none;
+}

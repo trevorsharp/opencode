@@ -56,6 +56,8 @@ import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
 import { LLMEvent } from "@opencode-ai/llm"
+import { ClaudeCLI } from "@/provider/claude-cli"
+import { isRecord } from "@/util/record"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -70,6 +72,47 @@ const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "image/png",
   "image/webp",
 ])
+
+function claudeResumeSessionID(input: {
+  messages: SessionV1.WithParts[]
+  user: SessionV1.User
+  model: Provider.Model
+  structuredOutputRetry: boolean
+}) {
+  if (input.model.api.npm !== ClaudeCLI.EXECUTION || input.structuredOutputRetry) return
+  const user = input.messages.find((message) => message.info.id === input.user.id)
+  if (!user) return
+  // An all-synthetic message is continuation state rather than something the user
+  // said, and normally cannot resume a conversation. A workflow completion is the
+  // exception: the run the model itself started reports back this way, and refusing
+  // it would leave the model unable to read its own result. The marker is a
+  // designation rather than proof — any client that can prompt this session can
+  // already drive it — so every other boundary check below still has to hold.
+  if (
+    user.parts.every((part) => "synthetic" in part && part.synthetic) &&
+    !user.parts.some((part) => part.type === "text" && isRecord(part.metadata?.["workflow"]))
+  )
+    return
+  const assistant = input.messages
+    .filter((message) => message.info.role === "assistant")
+    .sort((left, right) => right.info.id.localeCompare(left.info.id))[0]
+  if (
+    !assistant ||
+    assistant.info.role !== "assistant" ||
+    !assistant.info.finish ||
+    !assistant.info.time.completed ||
+    assistant.info.error
+  )
+    return
+  if (assistant.info.id >= input.user.id) return
+  const step = assistant.parts.findLast((part) => part.type === "step-finish")
+  if (!step || !isRecord(step.metadata)) return
+  const metadata = step.metadata[ClaudeCLI.EXECUTION]
+  if (!isRecord(metadata)) return
+  if (metadata.providerID !== input.model.providerID || metadata.modelID !== input.model.id) return
+  if (metadata.messageID !== assistant.info.id || typeof metadata.claudeSessionID !== "string") return
+  return metadata.claudeSessionID
+}
 
 const STRUCTURED_OUTPUT_DESCRIPTION = `Use this tool to return your final response in the requested structured format.
 
@@ -1082,6 +1125,7 @@ const layer = Layer.effect(
       function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
         let structured: unknown
+        let structuredOutputRetries = 0
         let step = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
@@ -1091,6 +1135,18 @@ const layer = Layer.effect(
 
           let msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
             Effect.provideService(Database.Service, database),
+          )
+
+          // Messages made up entirely of UI-only parts (injected workflow
+          // progress widgets) are display state — they must not steer loop
+          // control (their unfinished tool parts read as pending work and
+          // trigger assistant-prefill continuations) or reach the model.
+          msgs = msgs.filter(
+            (msg) =>
+              !(
+                msg.parts.length > 0 &&
+                msg.parts.every((part) => part.type === "tool" && part.state.metadata?.uiOnly === true)
+              ),
           )
 
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
@@ -1269,6 +1325,16 @@ const layer = Layer.effect(
             ]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
+            const promptStart =
+              structuredOutputRetries > 0
+                ? msgs.findLastIndex(
+                    (message) =>
+                      message.info.role === "user" &&
+                      message.parts.some((part) => part.type !== "text" || part.synthetic !== true),
+                  )
+                : -1
+            const promptMessages =
+              promptStart === -1 ? undefined : yield* MessageV2.toModelMessagesEffect(msgs.slice(promptStart), model)
             const result = yield* handle.process({
               user: lastUser,
               agent,
@@ -1280,8 +1346,15 @@ const layer = Layer.effect(
                 ...modelMsgs,
                 ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
               ],
+              promptMessages,
               tools,
               model,
+              resumeSessionID: claudeResumeSessionID({
+                messages: msgs,
+                user: lastUser,
+                model,
+                structuredOutputRetry: structuredOutputRetries > 0,
+              }),
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
 
@@ -1307,9 +1380,28 @@ const layer = Layer.effect(
                 return "break" as const
               }
               if (format.type === "json_schema") {
+                if (structuredOutputRetries < (format.retryCount ?? 2)) {
+                  structuredOutputRetries++
+                  const retryUser: SessionV1.User = {
+                    ...lastUser,
+                    id: MessageID.ascending(),
+                    time: { created: Date.now() },
+                    format: new SessionV1.OutputFormatJsonSchema(format),
+                  }
+                  yield* sessions.updateMessage(retryUser)
+                  yield* sessions.updatePart({
+                    id: PartID.ascending(),
+                    messageID: retryUser.id,
+                    sessionID,
+                    type: "text",
+                    text: "The previous response did not use the StructuredOutput tool. Retry now and call StructuredOutput with output that matches the requested schema.",
+                    synthetic: true,
+                  } satisfies SessionV1.TextPart)
+                  return "continue" as const
+                }
                 handle.message.error = new SessionV1.StructuredOutputError({
                   message: "Model did not produce structured output",
-                  retries: 0,
+                  retries: structuredOutputRetries,
                 }).toObject()
                 yield* sessions.updateMessage(handle.message)
                 return "break" as const

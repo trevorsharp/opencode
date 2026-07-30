@@ -1,4 +1,3 @@
-import { base64Encode } from "@opencode-ai/core/util/encode"
 import { createQuery } from "@tanstack/solid-query"
 import { useNavigate, useSearchParams } from "@solidjs/router"
 import { type Accessor, createMemo } from "solid-js"
@@ -16,6 +15,7 @@ import { useSync } from "@/context/sync"
 import { useTabs } from "@/context/tabs"
 import { useProviders } from "@/hooks/use-providers"
 import { pathKey } from "@/utils/path-key"
+import { cancelPendingProjectNavigation, legacyNewSessionHref, workspaceRootOf } from "@/utils/session-route"
 
 export function createPromptInputController(input: {
   sessionKey: Accessor<string>
@@ -98,7 +98,8 @@ export function createPromptProjectControls() {
     if (!serverKey) {
       layout.projects.open(worktree)
       server.projects.touch(worktree)
-      navigate(`/${base64Encode(worktree)}/session`)
+      cancelPendingProjectNavigation()
+      navigate(legacyNewSessionHref(worktree, workspaceRootOf(layout.projects.list(), worktree)))
       return
     }
 
@@ -107,7 +108,8 @@ export function createPromptProjectControls() {
     target.projects.open(worktree)
     target.projects.touch(worktree)
     server.setActive(ServerConnection.key(conn))
-    navigate(`/${base64Encode(worktree)}/session`)
+    cancelPendingProjectNavigation()
+    navigate(legacyNewSessionHref(worktree, workspaceRootOf(target.projects.list(), worktree)))
   }
 
   const addProject = (title: string, serverKey?: string) => {

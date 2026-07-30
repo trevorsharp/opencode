@@ -444,8 +444,9 @@ function taskAgent(
   const v2Tone = item?.color ? undefined : v2AgentTones[key]
   const color = agentColor(item?.color, agentThemeColors) ?? agentTones[key] ?? tone(key)
   const v2Color = agentColor(item?.color, v2AgentThemeColors) ?? v2Tone ?? color
+  const name = item?.name ?? raw
   return {
-    name: item?.name ?? `${raw[0]!.toUpperCase()}${raw.slice(1)}`,
+    name: `${name[0]!.toUpperCase()}${name.slice(1)}`,
     color,
     v2Color,
   }
@@ -571,18 +572,6 @@ export function getToolInfo(
   }
 }
 
-function urls(text: string | undefined) {
-  if (!text) return []
-  const seen = new Set<string>()
-  return [...text.matchAll(/https?:\/\/[^\s<>"'`)\]]+/g)]
-    .map((item) => item[0].replace(/[),.;:!?]+$/g, ""))
-    .filter((item) => {
-      if (seen.has(item)) return false
-      seen.add(item)
-      return true
-    })
-}
-
 function sessionLink(id: string | undefined, path: string, href?: (id: string) => string | undefined) {
   if (!id) return
 
@@ -617,7 +606,6 @@ function taskSession(
 
 const CONTEXT_GROUP_TOOLS = new Set(["read", "glob", "grep", "list"])
 const HIDDEN_TOOLS = new Set(["todowrite"])
-
 function list<T>(value: T[] | undefined | null, fallback: T[]) {
   if (Array.isArray(value)) return value
   return fallback
@@ -920,6 +908,18 @@ function contextToolSummary(parts: ToolPart[]) {
   const search = parts.filter((part) => part.tool === "glob" || part.tool === "grep").length
   const list = parts.filter((part) => part.tool === "list").length
   return { read, search, list }
+}
+
+function urls(text: string | undefined) {
+  if (!text) return []
+  const seen = new Set<string>()
+  return [...text.matchAll(/https?:\/\/[^\s<>"'`)\]]+/g)]
+    .map((item) => item[0].replace(/[),.;:!?]+$/g, ""))
+    .filter((item) => {
+      if (seen.has(item)) return false
+      seen.add(item)
+      return true
+    })
 }
 
 function ExaOutput(props: { output?: string }) {
@@ -1252,7 +1252,7 @@ export function UserMessageDisplay(props: {
   })
 
   const metaHead = createMemo(() => {
-    const agent = props.message.agent
+    const agent = props.useV2Actions ? props.message.agent : ""
     const items = [agent ? agent[0]?.toUpperCase() + agent.slice(1) : "", model()]
     return items.filter((x) => !!x).join("\u00A0\u00B7\u00A0")
   })
@@ -1479,6 +1479,8 @@ export interface ToolProps {
   metadata: Record<string, any>
   tool: string
   sessionID?: string
+  messageID?: string
+  partID?: string
   output?: string
   status?: string
   hideDetails?: boolean
@@ -1566,7 +1568,6 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
   const emptyMetadata: Record<string, any> = {}
 
   const input = () => part().state?.input ?? emptyInput
-  // @ts-expect-error
   const partMetadata = () => part().state?.metadata ?? emptyMetadata
   const taskId = createMemo(() => {
     if (part().tool !== "task") return
@@ -1584,7 +1585,12 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
     return taskId()
   })
 
-  const render = createMemo(() => ToolRegistry.render(part().tool) ?? GenericTool)
+  const registeredRender = createMemo(() => ToolRegistry.render(part().tool))
+  const render = createMemo(() => registeredRender() ?? GenericTool)
+  const genericError = createMemo(() => {
+    if (registeredRender() || part().state.status !== "error") return
+    return (part().state as any).error
+  })
   const controlledOpen = () => (props.onToolOpenChange ? (props.toolOpen ?? props.defaultOpen) : undefined)
   const handleToolOpenChange = (open: boolean) => props.onToolOpenChange?.(open)
 
@@ -1592,7 +1598,15 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
     <Show when={!hideQuestion()}>
       <div data-component="tool-part-wrapper" data-timeline-part-id={part().id}>
         <Switch>
-          <Match when={part().state.status === "error" && (part().state as any).error}>
+          <Match
+            when={
+              registeredRender() &&
+              part().state.status === "error" &&
+              part().tool !== "workflow" &&
+              part().tool !== "schedule" &&
+              (part().state as any).error
+            }
+          >
             {(error) => {
               const cleaned = error().replace("Error: ", "")
               if (part().tool === "question" && cleaned.includes("dismissed this question")) {
@@ -1624,9 +1638,11 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
               input={input()}
               tool={part().tool}
               sessionID={part().sessionID}
+              messageID={part().messageID}
+              partID={part().id}
               metadata={partMetadata()}
               // @ts-expect-error
-              output={part().state.output}
+              output={genericError() ?? part().state.output}
               status={part().state.status}
               hideDetails={props.hideDetails}
               defaultOpen={props.defaultOpen}
@@ -1702,7 +1718,8 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
 
   const meta = createMemo(() => {
     if (props.message.role !== "assistant") return ""
-    const agent = (props.message as AssistantMessage).agent
+    const message = props.message as AssistantMessage
+    const agent = props.useV2Actions ? message.agent : ""
     const items = [
       agent ? agent[0]?.toUpperCase() + agent.slice(1) : "",
       model(),
@@ -2102,6 +2119,190 @@ ToolRegistry.register({
   },
 })
 
+function WorkflowStatusIcon(props: { status: string }) {
+  return (
+    <Switch fallback={<span data-slot="workflow-status-dot" data-status={props.status} />}>
+      <Match when={props.status === "running"}>
+        <span data-component="task-tool-spinner">
+          <Spinner />
+        </span>
+      </Match>
+      <Match when={props.status === "completed"}>
+        <span data-slot="workflow-status-icon" data-status="completed">
+          <Icon name="circle-check" size="small" />
+        </span>
+      </Match>
+      <Match when={props.status === "error"}>
+        <span data-slot="workflow-status-icon" data-status="error">
+          <Icon name="circle-x" size="small" />
+        </span>
+      </Match>
+    </Switch>
+  )
+}
+
+function WorkflowAgentRow(props: { row: any; onOpen: () => void }) {
+  const data = useData()
+  const clickable = () => !!props.row?.sessionID
+  const model = createMemo(() => {
+    if (typeof props.row?.model !== "string" || !props.row.model) return
+    const separator = props.row.model.indexOf("/")
+    const providerID = separator === -1 ? "" : props.row.model.slice(0, separator)
+    const rawModel = separator === -1 ? props.row.model : props.row.model.slice(separator + 1)
+    const suffix = rawModel.match(/^(.*?)(?: \(([^()]*)\))?$/)
+    const modelID = suffix?.[1] ?? rawModel
+    const variant = typeof props.row.variant === "string" && props.row.variant ? props.row.variant : suffix?.[2]
+    const provider = data.store.provider?.all?.get(providerID)
+    const name =
+      (typeof props.row?.modelName === "string" && props.row.modelName) || provider?.models?.[modelID]?.name || modelID
+    return variant ? `${name} (${variant[0]?.toUpperCase()}${variant.slice(1)})` : name
+  })
+  return (
+    <div
+      data-slot="workflow-agent"
+      data-status={props.row?.status ?? "running"}
+      data-clickable={clickable() ? "" : undefined}
+      role={clickable() ? "button" : undefined}
+      tabIndex={clickable() ? 0 : undefined}
+      onClick={() => clickable() && props.onOpen()}
+      onKeyDown={(event) => {
+        if (!clickable() || (event.key !== "Enter" && event.key !== " ")) return
+        event.preventDefault()
+        props.onOpen()
+      }}
+    >
+      <WorkflowStatusIcon status={props.row?.status ?? "running"} />
+      <span data-slot="workflow-agent-label">{sentenceCase(props.row?.label)}</span>
+      <Show when={model()}>
+        <span data-component="task-tool-model">{model()}</span>
+      </Show>
+      <Show when={clickable()}>
+        <span data-slot="workflow-agent-open">
+          <Icon name="square-arrow-top-right" size="small" />
+        </span>
+      </Show>
+    </div>
+  )
+}
+
+function sentenceCase(value: unknown) {
+  if (typeof value !== "string" || !value) return value
+  return `${value[0]!.toUpperCase()}${value.slice(1)}`
+}
+
+function formatScheduleDate(value: unknown) {
+  if (value == null) return "None"
+  if (typeof value !== "string") return "Unknown"
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date)
+}
+
+function createProgressCardRenderer(metadataKey: "workflow" | "schedule", label: string): ToolComponent {
+  return function ProgressCard(props) {
+    const data = useData()
+    const card = createMemo(() => (props.metadata[metadataKey] ?? {}) as any)
+    const steps = createMemo(() => (Array.isArray(card().steps) ? card().steps : []))
+    const loose = createMemo(() => (Array.isArray(card().agents) ? card().agents : []))
+    const error = createMemo(() => {
+      if (card().status === "cancelled" || typeof card().error !== "string") return
+      return card()
+        .error.split("\n", 1)[0]
+        ?.replace(/^Error:\s*/, "")
+    })
+    const active = createMemo(() => {
+      if (props.status !== "running") return false
+      if (metadataKey === "workflow") return true
+      return (
+        steps().some(
+          (step: any) =>
+            step?.status === "running" ||
+            (Array.isArray(step?.agents) && step.agents.some((row: any) => row?.status === "running")),
+        ) || loose().some((row: any) => row?.status === "running")
+      )
+    })
+    const openSession = (id?: string) => {
+      if (id && data.navigateToSession) data.navigateToSession(id)
+    }
+    return (
+      <div data-component="workflow-card" data-status={card().status ?? props.status}>
+        <div data-slot="workflow-card-header">
+          <span data-slot="workflow-card-label">{label}</span>
+          <span data-slot="workflow-card-name">{sentenceCase(card().name ?? props.input.description)}</span>
+          <Show when={card().status === "cancelled" || card().status === "failed"}>
+            <span data-slot="workflow-card-status">{sentenceCase(card().status)}</span>
+          </Show>
+          <Show when={active()}>
+            <span data-component="task-tool-spinner">
+              <Spinner />
+            </span>
+          </Show>
+          <Show
+            when={
+              (props.status === "running" || (metadataKey === "workflow" && card().status === "paused")) &&
+              data.workflowCancel &&
+              props.sessionID &&
+              props.messageID &&
+              props.partID &&
+              !card().cancelRequested
+            }
+          >
+            <button
+              data-slot="workflow-cancel"
+              type="button"
+              onClick={() =>
+                data.workflowCancel?.({
+                  sessionID: props.sessionID!,
+                  messageID: props.messageID!,
+                  partID: props.partID!,
+                  metadataKey,
+                })
+              }
+            >
+              Cancel
+            </button>
+          </Show>
+        </div>
+        <Show when={metadataKey === "schedule"}>
+          <div data-slot="schedule-summary">
+            <span>Next run: {formatScheduleDate(card().nextFireAt)}</span>
+            <span>Expires: {formatScheduleDate(card().expiresAt)}</span>
+          </div>
+        </Show>
+        <For each={steps()}>
+          {(step: any) => (
+            <>
+              <div data-slot="workflow-step" data-status={step?.status ?? "pending"}>
+                <WorkflowStatusIcon status={step?.status ?? "pending"} />
+                <span data-slot="workflow-step-title">{step?.title}</span>
+              </div>
+              <For each={Array.isArray(step?.agents) ? step.agents : []}>
+                {(row: any) => <WorkflowAgentRow row={row} onOpen={() => openSession(row?.sessionID)} />}
+              </For>
+            </>
+          )}
+        </For>
+        <For each={loose()}>
+          {(row: any) => <WorkflowAgentRow row={row} onOpen={() => openSession(row?.sessionID)} />}
+        </For>
+        <Show when={error()}>
+          <div data-slot="workflow-card-error">{error()}</div>
+        </Show>
+      </div>
+    )
+  }
+}
+
+ToolRegistry.register({
+  name: "workflow",
+  render: createProgressCardRenderer("workflow", "Workflow"),
+})
+
+ToolRegistry.register({
+  name: "schedule",
+  render: createProgressCardRenderer("schedule", "Scheduled job"),
+})
+
 ToolRegistry.register({
   name: "shell",
   render(props) {
@@ -2149,7 +2350,7 @@ ToolRegistry.register({
                 icon={<IconV2 name={copied() ? "check" : "outline-copy"} size="small" />}
                 size="normal"
                 variant="ghost-muted"
-                onMouseDown={(e) => e.preventDefault()}
+                onMouseDown={(event) => event.preventDefault()}
                 onClick={handleCopy}
                 aria-label={copied() ? i18n.t("ui.message.copied") : i18n.t("ui.message.copy")}
               />

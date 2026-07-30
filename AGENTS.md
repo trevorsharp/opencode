@@ -1,3 +1,15 @@
+## OpenCode Fork
+
+- This repository is a fork of upstream opencode. Keep fork-specific changes small, intentional, and easy to rebase onto `origin/dev`.
+- For this fork, run `./packages/opencode/script/build.ts --single` from the repository root after every code change to rebuild the package.
+- Intentional fork behavior is documented in `fork-features/`. Read the relevant document before changing behavior it describes, and update it when a decision changes.
+- REQUIREMENT: all fork changes should be implemented without database schema changes.
+- Only tests and checks executed by that package build are relevant to this fork. Ignore all other tests and specs.
+- Broader test suites are not maintained or run for this fork. Do not add fork tests, modify upstream tests/specs/E2E files, or add skip-only helpers and accommodations.
+- Keep upstream locale catalogs and event-manifest specs unchanged. Use minimal hardcoded English at production call sites for fork-only UI text.
+
+## Remaining AGENTS.md
+
 - To regenerate the legacy JavaScript SDK, run `./packages/sdk/js/script/build.ts`.
 - After changing the public Protocol or Server `HttpApi`, run `bun run generate` from `packages/client`. Do not edit `src/generated` or `src/generated-effect` directly.
 - Keep runtime dependencies directed from Schema to Core and Protocol, then from Core and Protocol to Server. Client runtime code may depend on Schema and Protocol but never Core or Server; `sdk-next` composes Client, Core, and Server.

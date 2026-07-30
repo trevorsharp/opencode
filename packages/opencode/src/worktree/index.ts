@@ -6,12 +6,12 @@ import { Project } from "@/project/project"
 import { Database } from "@opencode-ai/core/database/database"
 import { eq } from "drizzle-orm"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
-import type { ProjectV2 } from "@opencode-ai/core/project"
+import { ProjectV2 } from "@opencode-ai/core/project"
 import { Slug } from "@opencode-ai/core/util/slug"
 import { errorMessage } from "../util/error"
 import { GlobalBus } from "@/bus/global"
 import { Git } from "@/git"
-import { Effect, Layer, Path, Schema, Scope, Context } from "effect"
+import { Duration, Effect, Layer, Path, Schema, Scope, Semaphore, Context } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { AppProcess } from "@opencode-ai/core/process"
@@ -23,7 +23,9 @@ export const Event = WorktreeEvent
 export const Info = Schema.Struct({
   name: Schema.String,
   branch: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
   directory: Schema.String,
+  root: Schema.optional(Schema.String),
 }).annotate({ identifier: "Worktree" })
 export type Info = Schema.Schema.Type<typeof Info>
 
@@ -32,13 +34,29 @@ export const CreateInput = Schema.Struct({
   startCommand: Schema.optional(
     Schema.String.annotate({ description: "Additional startup script to run after the project's start command" }),
   ),
+  mode: Schema.optional(
+    Schema.Literals(["workspace-member", "workspace-root"]).annotate({
+      description:
+        "Create or attach a workspace member, or create an empty workspace root; omit to create a Git worktree",
+    }),
+  ),
 }).annotate({ identifier: "WorktreeCreateInput" })
 export type CreateInput = Schema.Schema.Type<typeof CreateInput>
 
 export const RemoveInput = Schema.Struct({
   directory: Schema.String,
+  workspaceOnly: Schema.optional(
+    Schema.Boolean.annotate({ description: "Require the directory to be a managed workspace member" }),
+  ),
 }).annotate({ identifier: "WorktreeRemoveInput" })
 export type RemoveInput = Schema.Schema.Type<typeof RemoveInput>
+
+export const RemoveResult = Schema.Struct({
+  removed: Schema.Boolean,
+  workspaceRootRemoved: Schema.Boolean,
+  workspaceRootDirectory: Schema.optional(Schema.String),
+}).annotate({ identifier: "WorktreeRemoveResult" })
+export type RemoveResult = Schema.Schema.Type<typeof RemoveResult>
 
 export const ResetInput = Schema.Struct({
   directory: Schema.String,
@@ -122,12 +140,18 @@ export interface Interface {
   readonly create: (input?: CreateInput) => Effect.Effect<Info, Error>
   readonly list: () => Effect.Effect<(Omit<Info, "branch"> & { branch?: string })[], Error>
   readonly remove: (input: RemoveInput) => Effect.Effect<boolean, Error>
+  readonly removeDetailed: (input: RemoveInput) => Effect.Effect<RemoveResult, Error>
   readonly reset: (input: ResetInput) => Effect.Effect<boolean, Error>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Worktree") {}
 
 type GitResult = { code: number; text: string; stderr: string }
+type WorkspaceCliInfo = {
+  name?: string
+  path?: string
+  folders?: { folder?: string; branch?: string; source?: string; kind?: string }[]
+}
 
 const layer: Layer.Layer<
   Service,
@@ -156,6 +180,37 @@ const layer: Layer.Layer<
         const result = yield* appProcess.run(
           ChildProcess.make("git", args, { cwd: opts?.cwd, extendEnv: true, stdin: "ignore" }),
         )
+        return {
+          code: result.exitCode,
+          text: result.stdout.toString("utf8"),
+          stderr: result.stderr.toString("utf8"),
+        } satisfies GitResult
+      },
+      Effect.catch((e) =>
+        Effect.succeed({
+          code: 1,
+          text: "",
+          stderr: e instanceof Error ? e.message : String(e),
+        } satisfies GitResult),
+      ),
+    )
+
+    // The workspace CLI is a bun script, and bun reads bunfig.toml from its cwd.
+    // Inheriting the server's cwd therefore lets an unrelated project's preload
+    // fail the CLI before it parses its own arguments, which reads back as
+    // missing workspace information. Directory-independent commands (`info
+    // --workspace`, `list`) get opencode's own data directory instead, which
+    // never carries a bunfig.
+    const workspace = Effect.fnUntraced(
+      function* (args: string[], opts?: { cwd?: string; timeout?: Duration.Input }) {
+        const command = appProcess.run(
+          ChildProcess.make("workspace", args, {
+            cwd: opts?.cwd ?? Global.Path.data,
+            extendEnv: true,
+            stdin: "ignore",
+          }),
+        )
+        const result = yield* opts?.timeout ? command.pipe(Effect.timeout(opts.timeout)) : command
         return {
           code: result.exitCode,
           text: result.stdout.toString("utf8"),
@@ -225,13 +280,21 @@ const layer: Layer.Layer<
         })
       }
 
-      yield* project.addSandbox(ctx.project.id, info.directory).pipe(Effect.catch(() => Effect.void))
+      yield* project.addSandbox(ctx.project.id, info.directory).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("worktree persistence failed", {
+            projectID: ctx.project.id,
+            directory: info.directory,
+            cause,
+          }),
+        ),
+      )
     })
 
-    const boot = Effect.fnUntraced(function* (info: Info, startCommand?: string) {
+    const boot = Effect.fnUntraced(function* (info: Info, startCommand?: string, owner?: ProjectV2.ID) {
       const ctx = yield* InstanceState.context
       const workspaceID = yield* InstanceState.workspaceID
-      const projectID = ctx.project.id
+      const projectID = owner ?? ctx.project.id
       const extra = startCommand?.trim()
 
       const populated = yield* git(["reset", "--hard"], { cwd: info.directory })
@@ -240,7 +303,7 @@ const layer: Layer.Layer<
         yield* Effect.logError("worktree checkout failed", { directory: info.directory, message })
         GlobalBus.emit("event", {
           directory: info.directory,
-          project: ctx.project.id,
+          project: projectID,
           workspace: workspaceID,
           payload: { type: Event.Failed.type, properties: { message } },
         })
@@ -255,7 +318,7 @@ const layer: Layer.Layer<
             yield* Effect.logError("worktree bootstrap failed", { directory: info.directory, message })
             GlobalBus.emit("event", {
               directory: info.directory,
-              project: ctx.project.id,
+              project: projectID,
               workspace: workspaceID,
               payload: { type: Event.Failed.type, properties: { message } },
             })
@@ -267,7 +330,7 @@ const layer: Layer.Layer<
 
       GlobalBus.emit("event", {
         directory: info.directory,
-        project: ctx.project.id,
+        project: projectID,
         workspace: workspaceID,
         payload: {
           type: Event.Ready.type,
@@ -276,6 +339,172 @@ const layer: Layer.Layer<
       })
 
       yield* runStartScripts(info.directory, { projectID, extra })
+    })
+
+    const loadWorkspaceInfo = Effect.fnUntraced(function* (target: string, opts?: { cwd?: string }) {
+      const info = yield* workspace(["info", "--json", "--workspace", target], { ...opts, timeout: "10 seconds" })
+      if (info.code !== 0) return undefined
+      return yield* Effect.try({
+        try: () => {
+          const data = JSON.parse(info.text || "{}") as unknown
+          if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid workspace info")
+          return data as WorkspaceCliInfo
+        },
+        catch: (cause) =>
+          new ListFailedError({ message: cause instanceof Error ? cause.message : "Failed to parse workspace info" }),
+      })
+    })
+
+    const workspaceListLock = Semaphore.makeUnsafe(1)
+    const listWorkspacesUncached = Effect.fnUntraced(function* () {
+      const result = yield* workspace(["list", "--json", "--verbose"], { timeout: "10 seconds" })
+      if (result.code !== 0) {
+        return yield* new ListFailedError({
+          message: result.stderr || result.text || "Failed to list workspaces",
+        })
+      }
+      return yield* Effect.try({
+        try: () => {
+          const data = JSON.parse(result.text || "[]") as unknown
+          if (!Array.isArray(data)) throw new Error("Invalid workspace list")
+          return data as WorkspaceCliInfo[]
+        },
+        catch: (cause) =>
+          new ListFailedError({ message: cause instanceof Error ? cause.message : "Failed to parse workspace list" }),
+      })
+    }, workspaceListLock.withPermits(1))
+    const [listWorkspaces, invalidateWorkspaceList] = yield* Effect.cachedInvalidateWithTTL(
+      listWorkspacesUncached(),
+      Duration.seconds(1),
+    )
+    const mutateWorkspace = Effect.fnUntraced(function* (args: string[], opts?: { cwd?: string }) {
+      const result = yield* workspace(args, { ...opts, timeout: "5 minutes" })
+      if (result.code === 0) yield* invalidateWorkspaceList
+      return result
+    }, workspaceListLock.withPermits(1))
+
+    const workspaceEntries = Effect.fnUntraced(function* (data: WorkspaceCliInfo) {
+      return yield* Effect.forEach(data.folders ?? [], (folder) =>
+        Effect.gen(function* () {
+          if (!data.path || !folder.folder) return undefined
+          const directory = yield* canonical(pathSvc.join(data.path, folder.folder))
+          const source = folder.source ? yield* canonical(folder.source) : undefined
+          return {
+            name: folder.folder,
+            directory,
+            description: data.name,
+            root: data.path,
+            source,
+            workspacePath: data.path,
+            ...(folder.branch ? { branch: folder.branch } : {}),
+          }
+        }),
+      ).pipe(Effect.map((items) => items.filter((item) => item !== undefined)))
+    })
+
+    const allWorkspaceEntries = Effect.fnUntraced(function* () {
+      const workspaces = yield* listWorkspaces
+      return yield* Effect.forEach(workspaces, workspaceEntries).pipe(Effect.map((items) => items.flat()))
+    })
+
+    const workspaceFolderInfo = Effect.fnUntraced(function* (
+      name: string,
+      input?: { branch?: string; exclude?: string[] },
+    ) {
+      const ctx = yield* InstanceState.context
+      const data = yield* loadWorkspaceInfo(name)
+      if (!data) return undefined
+      const source = yield* canonical(ctx.project.worktree)
+      const excluded = new Set(input?.exclude ?? [])
+      const entries = yield* workspaceEntries(data)
+      const entry =
+        entries.find(
+          (item) => item.source === source && item.branch === input?.branch && !excluded.has(item.directory),
+        ) ?? entries.find((item) => item.source === source && !excluded.has(item.directory))
+      if (!entry) return undefined
+      return entry satisfies Info
+    })
+
+    const createWorkspaceMember = Effect.fn("Worktree.createWorkspaceMember")(function* (
+      input: CreateInput & { name: string },
+    ) {
+      const ctx = yield* InstanceState.context
+      if (ctx.project.vcs !== "git") {
+        return yield* new NotGitError({ message: "Worktrees are only supported for git projects" })
+      }
+
+      const name = slugify(input.name)
+      if (!name)
+        return yield* new NameGenerationFailedError({ message: "Workspace name must include letters or numbers" })
+
+      const existing = yield* loadWorkspaceInfo(name)
+      const existingFolders = existing ? yield* workspaceEntries(existing) : []
+      const created = existing
+        ? yield* mutateWorkspace(
+            ["add", ctx.project.worktree, "--workspace", name, "--branch", name, "--background-setup"],
+            {
+              cwd: ctx.worktree,
+            },
+          )
+        : yield* mutateWorkspace(["create", input.name, ctx.project.worktree, "--branch", name, "--background-setup"], {
+            cwd: ctx.worktree,
+          })
+
+      if (created.code !== 0) {
+        return yield* new CreateFailedError({ message: created.stderr || created.text || "Failed to create workspace" })
+      }
+
+      const info = yield* workspaceFolderInfo(name, {
+        branch: existing ? undefined : name,
+        exclude: existingFolders.map((folder) => folder.directory),
+      })
+      if (!info) return yield* new CreateFailedError({ message: "Failed to read workspace folder information" })
+
+      const createdInfo = { ...info, name, description: input.name, branch: info.branch ?? name }
+      const ownerID = yield* project.fromDirectory(info.workspacePath).pipe(
+        Effect.map((owner) => owner.project.id),
+        Effect.catchCause((cause) =>
+          canonical(info.workspacePath).pipe(
+            Effect.map((root) => ProjectV2.ID.make(`workspace:${root}`)),
+            Effect.tap(() =>
+              Effect.logWarning("workspace project admission failed", { directory: info.workspacePath, cause }),
+            ),
+          ),
+        ),
+      )
+      yield* project.addSandbox(ownerID, createdInfo.directory).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("workspace persistence failed", {
+            projectID: ownerID,
+            directory: createdInfo.directory,
+            cause,
+          }),
+        ),
+      )
+      yield* boot(createdInfo, input.startCommand, ownerID).pipe(
+        Effect.catchCause((cause) => Effect.logError("workspace bootstrap failed", { cause })),
+        Effect.forkIn(scope),
+      )
+      return createdInfo
+    })
+
+    const createWorkspaceOnly = Effect.fn("Worktree.createWorkspaceOnly")(function* (
+      input: CreateInput & { name: string },
+    ) {
+      const displayName = input.name.trim()
+      const name = slugify(displayName)
+      if (!name)
+        return yield* new NameGenerationFailedError({ message: "Workspace name must include letters or numbers" })
+
+      const created = yield* mutateWorkspace(["create", displayName, "--background-setup"])
+      if (created.code !== 0) {
+        return yield* new CreateFailedError({ message: created.stderr || created.text || "Failed to create workspace" })
+      }
+
+      const info = yield* loadWorkspaceInfo(name)
+      if (!info?.path) return yield* new CreateFailedError({ message: "Failed to read workspace information" })
+
+      return { name: info.name ?? name, description: displayName, directory: info.path } satisfies Info
     })
 
     const createFromInfo = Effect.fn("Worktree.createFromInfo")(function* (info: Info, startCommand?: string) {
@@ -287,6 +516,10 @@ const layer: Layer.Layer<
     })
 
     const create = Effect.fn("Worktree.create")(function* (input?: CreateInput) {
+      if (input?.mode === "workspace-root")
+        return yield* createWorkspaceOnly({ ...input, name: input.name ?? Slug.create() })
+      if (input?.mode === "workspace-member")
+        return yield* createWorkspaceMember({ ...input, name: input.name ?? Slug.create() })
       const info = yield* makeWorktreeInfo({ name: input?.name })
       yield* createFromInfo(info, input?.startCommand)
       return info
@@ -303,44 +536,51 @@ const layer: Layer.Layer<
       return text
         .split("\n")
         .map((line) => line.trim())
-        .reduce<{ path?: string; branch?: string }[]>((acc, line) => {
-          if (!line) return acc
+        .reduce<{ path?: string; branch?: string }[]>((result, line) => {
+          if (!line) return result
           if (line.startsWith("worktree ")) {
-            acc.push({ path: line.slice("worktree ".length).trim() })
-            return acc
+            result.push({ path: line.slice("worktree ".length).trim() })
+            return result
           }
-          const current = acc[acc.length - 1]
-          if (!current) return acc
-          if (line.startsWith("branch ")) {
-            current.branch = line.slice("branch ".length).trim()
-          }
-          return acc
+          const current = result[result.length - 1]
+          if (current && line.startsWith("branch ")) current.branch = line.slice("branch ".length).trim()
+          return result
         }, [])
     }
 
-    const locateWorktree = Effect.fnUntraced(function* (
+    const locateGitWorktree = Effect.fnUntraced(function* (
       entries: { path?: string; branch?: string }[],
       directory: string,
     ) {
       for (const item of entries) {
         if (!item.path) continue
-        const key = yield* canonical(item.path)
-        if (key === directory) return item
+        if ((yield* canonical(item.path)) === directory) return item
       }
       return undefined
     })
 
-    const list = Effect.fn("Worktree.list")(function* () {
-      const ctx = yield* InstanceState.context
-      if (ctx.project.vcs !== "git") {
-        return []
-      }
+    const workspaceRootForDirectory = Effect.fnUntraced(function* (directory: string) {
+      const start = yield* canonical(directory)
+      const visit = (current: string): Effect.Effect<string | undefined> =>
+        fs.exists(pathSvc.join(current, ".workspace")).pipe(
+          Effect.orDie,
+          Effect.flatMap((exists) => {
+            if (exists) return Effect.succeed(current)
+            const parent = pathSvc.dirname(current)
+            if (parent === current) return Effect.succeed(undefined)
+            return visit(parent)
+          }),
+        )
+      return yield* visit(start)
+    })
 
+    const listGitWorktrees = Effect.fnUntraced(function* () {
+      const ctx = yield* InstanceState.context
+      if (ctx.project.vcs !== "git") return []
       const result = yield* git(["worktree", "list", "--porcelain"], { cwd: ctx.worktree })
       if (result.code !== 0) {
         return yield* new ListFailedError({ message: result.stderr || result.text || "Failed to read git worktrees" })
       }
-
       const primary = yield* canonical(ctx.project.worktree)
       const primaryName = pathSvc.basename(primary).toLowerCase()
       return yield* Effect.forEach(parseWorktreeList(result.text), (entry) =>
@@ -348,6 +588,8 @@ const layer: Layer.Layer<
           if (!entry.path) return undefined
           const directory = yield* canonical(entry.path)
           if (directory === primary) return undefined
+          const workspaceRoot = yield* workspaceRootForDirectory(directory)
+          if (workspaceRoot && workspaceRoot !== primary) return undefined
           const name = pathSvc.basename(directory).toLowerCase()
           return {
             name: name === primaryName ? pathSvc.basename(pathSvc.dirname(directory)) : name,
@@ -358,94 +600,183 @@ const layer: Layer.Layer<
       ).pipe(Effect.map((items) => items.filter((item) => item !== undefined)))
     })
 
-    function stopFsmonitor(target: string) {
-      return fs.exists(target).pipe(
-        Effect.orDie,
-        Effect.flatMap((exists) => (exists ? git(["fsmonitor--daemon", "stop"], { cwd: target }) : Effect.void)),
-      )
-    }
+    const stopFsmonitor = Effect.fnUntraced(function* (directory: string) {
+      if (!(yield* fs.exists(directory).pipe(Effect.orDie))) return
+      yield* git(["fsmonitor--daemon", "stop"], { cwd: directory })
+    })
 
-    function cleanDirectory(target: string) {
-      return Effect.tryPromise({
-        try: async () => {
-          const fsp = await import("fs/promises")
-          const attempts = process.platform === "win32" ? 50 : 5
-          for (const attempt of Array.from({ length: attempts }, (_, i) => i)) {
-            try {
-              await fsp.rm(target, { recursive: true, force: true })
-              return
-            } catch (error) {
-              if (attempt === attempts - 1) throw error
-              await new Promise((resolve) => setTimeout(resolve, 100))
-            }
-          }
-        },
-        catch: (error) =>
-          new RemoveFailedError({ message: errorMessage(error) || "Failed to remove git worktree directory" }),
-      })
-    }
+    const cleanWorktreeDirectory = Effect.fnUntraced(function* (directory: string) {
+      if (!(yield* fs.exists(directory).pipe(Effect.orDie))) return
+      yield* fs
+        .remove(directory, { recursive: true })
+        .pipe(
+          Effect.mapError(
+            (error) =>
+              new RemoveFailedError({ message: errorMessage(error) || "Failed to remove git worktree directory" }),
+          ),
+        )
+    })
 
-    const remove = Effect.fn("Worktree.remove")(function* (input: RemoveInput) {
+    const workspaceInventory = Effect.fnUntraced(function* () {
       const ctx = yield* InstanceState.context
-      if (ctx.project.vcs !== "git") {
+      const root = yield* canonical(ctx.project.worktree)
+      const workspaces = yield* listWorkspaces
+      const data = yield* Effect.forEach(workspaces, (item) =>
+        item.path
+          ? canonical(item.path).pipe(Effect.map((directory) => (directory === root ? item : undefined)))
+          : Effect.succeed(undefined),
+      )
+      const match = data.find((item) => item !== undefined)
+      const entries = match ? yield* workspaceEntries(match) : []
+      yield* syncSandboxes(entries)
+      return entries
+    })
+
+    const syncSandboxes = Effect.fnUntraced(
+      function* (entries: readonly { directory: string }[]) {
+        const ctx = yield* InstanceState.context
+        const current = yield* project.get(ctx.project.id)
+        const directories = new Set(entries.map((entry) => entry.directory))
+        yield* Effect.forEach(entries, (entry) =>
+          current?.sandboxes.includes(entry.directory)
+            ? Effect.void
+            : project.addSandbox(ctx.project.id, entry.directory),
+        )
+        yield* Effect.forEach(current?.sandboxes ?? [], (directory) =>
+          directories.has(directory) ? Effect.void : project.removeSandbox(ctx.project.id, directory),
+        )
+      },
+      Effect.catchCause((cause) => Effect.logWarning("workspace persistence reconciliation failed", { cause })),
+    )
+
+    const list = Effect.fn("Worktree.list")(function* () {
+      const ctx = yield* InstanceState.context
+      if (ctx.project.id.startsWith("workspace:")) return yield* workspaceInventory()
+
+      const worktrees = yield* listGitWorktrees()
+      if (ctx.project.vcs !== "git") return worktrees
+      const source = yield* canonical(ctx.project.worktree)
+      const entries = yield* allWorkspaceEntries().pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("workspace membership listing failed", { projectID: ctx.project.id, cause }).pipe(
+            Effect.as(undefined),
+          ),
+        ),
+      )
+      const memberships = entries?.filter((entry) => entry.source === source) ?? []
+      const result = [...memberships, ...worktrees].filter(
+        (entry, index, items) => items.findIndex((item) => item.directory === entry.directory) === index,
+      )
+      if (entries) yield* syncSandboxes(result)
+      return result
+    })
+
+    const workspaceFolder = Effect.fnUntraced(function* (directory: string) {
+      const ctx = yield* InstanceState.context
+      const target = yield* canonical(directory)
+      if (ctx.project.id.startsWith("workspace:")) {
+        const entries = yield* workspaceInventory()
+        return entries.find((entry) => entry.directory === target)
+      }
+      const source = yield* canonical(ctx.project.worktree)
+      const entries = yield* allWorkspaceEntries()
+      return entries.find((entry) => entry.directory === target && entry.source === source)
+    })
+
+    const removeDetailed = Effect.fn("Worktree.removeDetailed")(function* (input: RemoveInput) {
+      const ctx = yield* InstanceState.context
+      if (ctx.project.vcs !== "git" && !input.workspaceOnly) {
         return yield* new NotGitError({ message: "Worktrees are only supported for git projects" })
       }
 
       const directory = yield* canonical(input.directory)
+      const primary = yield* canonical(ctx.worktree)
+      if (directory === primary) return yield* new RemoveFailedError({ message: "Cannot remove the primary workspace" })
 
-      // Preserve the loaded path casing for the store cache; `directory` is lowercased on Windows.
-      if (directory !== (yield* canonical(ctx.worktree))) yield* store.disposeDirectory(input.directory)
-
-      const list = yield* git(["worktree", "list", "--porcelain"], { cwd: ctx.worktree })
-      if (list.code !== 0) {
-        return yield* new RemoveFailedError({ message: list.stderr || list.text || "Failed to read git worktrees" })
-      }
-
-      const entries = parseWorktreeList(list.text)
-      const entry = yield* locateWorktree(entries, directory)
-
-      if (!entry?.path) {
-        const directoryExists = yield* fs.exists(directory).pipe(Effect.orDie)
-        if (directoryExists) {
-          yield* stopFsmonitor(directory)
-          yield* cleanDirectory(directory)
+      const folder = yield* workspaceFolder(directory).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      if (folder) {
+        const removed = yield* mutateWorkspace(["rm", folder.name, "--workspace", folder.workspacePath, "--force"], {
+          cwd: folder.workspacePath,
+        })
+        if (removed.code !== 0) {
+          return yield* new RemoveFailedError({
+            message: removed.stderr || removed.text || "Failed to remove workspace folder",
+          })
         }
-        return true
+        yield* store.disposeDirectory(input.directory)
+        yield* project
+          .removeSandbox(ctx.project.id, directory)
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("workspace persistence failed", { projectID: ctx.project.id, directory, cause }),
+            ),
+          )
+        const workspaceRootExists = yield* fs.exists(folder.workspacePath).pipe(Effect.orDie)
+        return {
+          removed: true,
+          workspaceRootRemoved: !workspaceRootExists,
+          ...(!workspaceRootExists ? { workspaceRootDirectory: folder.workspacePath } : {}),
+        }
       }
 
-      // Git may return the original casing when a caller supplied a normalized Windows path.
-      yield* store.disposeDirectory(entry.path)
+      if (input.workspaceOnly) {
+        return yield* new RemoveFailedError({ message: "Workspace folder not found" })
+      }
+
+      const workspaceRoot = yield* workspaceRootForDirectory(directory)
+      if (workspaceRoot && workspaceRoot !== (yield* canonical(ctx.project.worktree))) {
+        return yield* new RemoveFailedError({ message: "Workspace folder belongs to another project" })
+      }
+
+      const worktrees = yield* git(["worktree", "list", "--porcelain"], { cwd: ctx.worktree })
+      if (worktrees.code !== 0) {
+        return yield* new RemoveFailedError({
+          message: worktrees.stderr || worktrees.text || "Failed to list git worktrees",
+        })
+      }
+      const entry = yield* locateGitWorktree(parseWorktreeList(worktrees.text), directory)
+      if (!entry?.path) {
+        if (!(yield* fs.exists(input.directory).pipe(Effect.orDie)))
+          return { removed: true, workspaceRootRemoved: false }
+        return yield* new RemoveFailedError({ message: "Directory is not a managed git worktree" })
+      }
+
       yield* stopFsmonitor(entry.path)
       const removed = yield* git(["worktree", "remove", "--force", entry.path], { cwd: ctx.worktree })
       if (removed.code !== 0) {
         const next = yield* git(["worktree", "list", "--porcelain"], { cwd: ctx.worktree })
-        if (next.code !== 0) {
-          return yield* new RemoveFailedError({
-            message: removed.stderr || removed.text || next.stderr || next.text || "Failed to remove git worktree",
-          })
-        }
-
-        const stale = yield* locateWorktree(parseWorktreeList(next.text), directory)
+        const stale = next.code === 0 ? yield* locateGitWorktree(parseWorktreeList(next.text), directory) : entry
         if (stale?.path) {
           return yield* new RemoveFailedError({
-            message: removed.stderr || removed.text || "Failed to remove git worktree",
+            message: removed.stderr || removed.text || next.stderr || next.text || "Failed to remove worktree",
           })
         }
       }
-
-      yield* cleanDirectory(entry.path)
-
+      yield* store.disposeDirectory(entry.path)
+      yield* project
+        .removeSandbox(ctx.project.id, directory)
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("worktree persistence failed", { projectID: ctx.project.id, directory, cause }),
+          ),
+        )
+      yield* cleanWorktreeDirectory(entry.path).pipe(
+        Effect.catchCause((cause) => Effect.logWarning("worktree directory cleanup failed", { directory, cause })),
+      )
       const branch = entry.branch?.replace(/^refs\/heads\//, "")
       if (branch) {
         const deleted = yield* git(["branch", "-D", branch], { cwd: ctx.worktree })
-        if (deleted.code !== 0) {
-          return yield* new RemoveFailedError({
+        if (deleted.code !== 0)
+          yield* Effect.logWarning("worktree branch cleanup failed", {
+            branch,
             message: deleted.stderr || deleted.text || "Failed to delete worktree branch",
           })
-        }
       }
+      return { removed: true, workspaceRootRemoved: false }
+    })
 
-      return true
+    const remove = Effect.fn("Worktree.remove")(function* (input: RemoveInput) {
+      return (yield* removeDetailed(input)).removed
     })
 
     const gitExpect = Effect.fnUntraced(function* (
@@ -524,29 +855,30 @@ const layer: Layer.Layer<
 
     const reset = Effect.fn("Worktree.reset")(function* (input: ResetInput) {
       const ctx = yield* InstanceState.context
-      if (ctx.project.vcs !== "git") {
-        return yield* new NotGitError({ message: "Worktrees are only supported for git projects" })
-      }
-
       const directory = yield* canonical(input.directory)
       const primary = yield* canonical(ctx.worktree)
       if (directory === primary) {
         return yield* new ResetFailedError({ message: "Cannot reset the primary workspace" })
       }
 
-      const list = yield* git(["worktree", "list", "--porcelain"], { cwd: ctx.worktree })
-      if (list.code !== 0) {
-        return yield* new ResetFailedError({ message: list.stderr || list.text || "Failed to read git worktrees" })
+      const folder = yield* workspaceFolder(directory).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      const workspaceRoot = yield* workspaceRootForDirectory(directory)
+      if (!folder && workspaceRoot && workspaceRoot !== (yield* canonical(ctx.project.worktree))) {
+        return yield* new ResetFailedError({ message: "Workspace folder belongs to another project" })
       }
-
-      const entry = yield* locateWorktree(parseWorktreeList(list.text), directory)
-      if (!entry?.path) {
-        return yield* new ResetFailedError({ message: "Worktree not found" })
+      const worktrees = folder ? undefined : yield* git(["worktree", "list", "--porcelain"], { cwd: ctx.worktree })
+      if (worktrees && worktrees.code !== 0) {
+        return yield* new ResetFailedError({
+          message: worktrees.stderr || worktrees.text || "Failed to read git worktrees",
+        })
       }
+      const gitWorktree = worktrees ? yield* locateGitWorktree(parseWorktreeList(worktrees.text), directory) : undefined
+      if (!folder && !gitWorktree?.path) return yield* new ResetFailedError({ message: "Workspace folder not found" })
+      const sourcePath = folder?.source ?? ctx.worktree
+      const worktreePath = folder?.directory ?? gitWorktree?.path
+      if (!worktreePath) return yield* new ResetFailedError({ message: "Workspace folder not found" })
 
-      const worktreePath = entry.path
-
-      const base = yield* gitSvc.defaultBranch(ctx.worktree)
+      const base = yield* gitSvc.defaultBranch(sourcePath)
       if (!base) {
         return yield* new ResetFailedError({ message: "Default branch not found" })
       }
@@ -557,7 +889,7 @@ const layer: Layer.Layer<
         const branch = base.ref.slice(sep + 1)
         yield* gitExpect(
           ["fetch", remote, branch],
-          { cwd: ctx.worktree },
+          { cwd: sourcePath },
           (r) => new ResetFailedError({ message: r.stderr || r.text || `Failed to fetch ${base.ref}` }),
         )
       }
@@ -610,7 +942,7 @@ const layer: Layer.Layer<
       return true
     })
 
-    return Service.of({ makeWorktreeInfo, createFromInfo, create, list, remove, reset })
+    return Service.of({ makeWorktreeInfo, createFromInfo, create, list, remove, removeDetailed, reset })
   }),
 )
 

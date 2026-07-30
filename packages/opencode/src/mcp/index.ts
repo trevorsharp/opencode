@@ -665,6 +665,11 @@ const layer = Layer.effect(
 
     const tools = Effect.fn("MCP.tools")(function* () {
       const result: Record<string, McpTool> = {}
+      // Public names sanitize server and tool names, which can collapse distinct
+      // pairs onto one name. A name more than one tool claims names no particular
+      // tool, so it is dropped rather than silently resolving to whichever server
+      // was listed last.
+      const ambiguous = new Set<string>()
       const s = yield* InstanceState.get(state)
 
       const cfg = yield* cfgSvc.get()
@@ -681,8 +686,14 @@ const layer = Layer.effect(
         }
         const timeout = requestTimeout(s, clientName, mcpConfig, defaultTimeout)
         for (const def of listed) {
-          result[McpCatalog.toolName(clientName, def.name)] = { def, client, timeout }
+          const name = McpCatalog.toolName(clientName, def.name)
+          if (name in result) ambiguous.add(name)
+          result[name] = { def, client, timeout }
         }
+      }
+      for (const name of ambiguous) {
+        yield* Effect.logWarning("mcp tool name is claimed by more than one tool", { name })
+        delete result[name]
       }
       return result
     })

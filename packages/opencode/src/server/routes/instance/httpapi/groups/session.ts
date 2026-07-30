@@ -74,6 +74,24 @@ export const RevertPayload = Schema.Struct(Struct.omit(SessionRevert.RevertInput
 export const PermissionResponsePayload = Schema.Struct({
   response: PermissionV1.Reply,
 })
+export const AgentCardPayload = Schema.Struct({
+  childSessionID: Schema.optional(SessionID),
+  description: Schema.String,
+  agent: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.String),
+  prompt: Schema.optional(Schema.String),
+  status: Schema.Literals(["pending", "running", "completed", "error"]),
+  output: Schema.optional(Schema.String),
+  error: Schema.optional(Schema.String),
+  tool: Schema.optional(Schema.String),
+  metadata: Schema.optional(Schema.Record(Schema.String, Schema.Any)),
+  messageID: Schema.optional(MessageID),
+  partID: Schema.optional(PartID),
+})
+export const AgentCardResult = Schema.Struct({
+  messageID: MessageID,
+  partID: PartID,
+})
 
 export const SessionPaths = {
   list: root,
@@ -102,6 +120,7 @@ export const SessionPaths = {
   deleteMessage: `${root}/:sessionID/message/:messageID`,
   deletePart: `${root}/:sessionID/message/:messageID/part/:partID`,
   updatePart: `${root}/:sessionID/message/:messageID/part/:partID`,
+  agentCard: `${root}/:sessionID/agent-card`,
 } as const
 
 export const SessionApi = HttpApi.make("session")
@@ -440,6 +459,20 @@ export const SessionApi = HttpApi.make("session")
           OpenApi.annotations({
             identifier: "part.update",
             description: "Update a part in a message.",
+          }),
+        ),
+        HttpApiEndpoint.post("agentCard", SessionPaths.agentCard, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          payload: AgentCardPayload,
+          success: described(AgentCardResult, "Successfully upserted agent card"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.agentCard",
+            summary: "Upsert agent card",
+            description:
+              "Create or update an agent card linking to a child session, without triggering an LLM turn. Lets orchestrators (e.g. workflow plugins) surface programmatically-spawned agents in the parent conversation. Omit messageID/partID to create the card; pass the returned IDs to update its status.",
           }),
         ),
       )

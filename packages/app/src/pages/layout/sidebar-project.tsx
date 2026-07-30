@@ -1,6 +1,7 @@
 import { createMemo, For, Show, type Accessor, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { base64Encode } from "@opencode-ai/core/util/encode"
+import { getFilename } from "@opencode-ai/core/util/path"
 import { Button } from "@opencode-ai/ui/button"
 import { ContextMenu } from "@opencode-ai/ui/context-menu"
 import { HoverCard } from "@opencode-ai/ui/hover-card"
@@ -26,9 +27,13 @@ export type ProjectSidebarContext = {
   navigateToProject: (directory: string) => void
   openSidebar: () => void
   closeProject: (directory: string) => void
-  showEditProjectDialog: (project: LocalProject) => void
-  toggleProjectWorkspaces: (project: LocalProject) => void
+  openRemoteVSCode: (directory: string) => void
+  canOpenRemoteVSCode: Accessor<boolean>
   workspacesEnabled: (project: LocalProject) => boolean
+  workspaceProject: (project: LocalProject) => boolean
+  addProjectToWorkspace: (project: LocalProject) => void
+  showCreateWorkspaceDialog: (project: LocalProject) => void
+  projectPending: (directory: string) => boolean
   workspaceIds: (project: LocalProject) => string[]
   workspaceLabel: (directory: string, branch?: string, projectId?: string) => string
   sessionProps: Omit<SessionItemProps, "session" | "list" | "slug" | "mobile" | "dense">
@@ -60,13 +65,11 @@ const ProjectTile = (props: {
   overlay: Accessor<boolean>
   suppressHover: Accessor<boolean>
   dirs: Accessor<string[]>
+  ctx: ProjectSidebarContext
   onProjectMouseEnter: (worktree: string, event: MouseEvent) => void
   onProjectMouseLeave: (worktree: string) => void
   onProjectFocus: (worktree: string) => void
   navigateToProject: (directory: string) => void
-  showEditProjectDialog: (project: LocalProject) => void
-  toggleProjectWorkspaces: (project: LocalProject) => void
-  workspacesEnabled: (project: LocalProject) => boolean
   closeProject: (directory: string) => void
   setMenu: (value: boolean) => void
   setOpen: (value: boolean) => void
@@ -148,21 +151,34 @@ const ProjectTile = (props: {
       </ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content>
-          <ContextMenu.Item onSelect={() => props.showEditProjectDialog(props.project)}>
-            <ContextMenu.ItemLabel>{props.language.t("common.edit")}</ContextMenu.ItemLabel>
-          </ContextMenu.Item>
-          <ContextMenu.Item
-            data-action="project-workspaces-toggle"
-            data-project={base64Encode(props.project.worktree)}
-            disabled={props.project.vcs !== "git" && !props.workspacesEnabled(props.project)}
-            onSelect={() => props.toggleProjectWorkspaces(props.project)}
-          >
-            <ContextMenu.ItemLabel>
-              {props.workspacesEnabled(props.project)
-                ? props.language.t("sidebar.workspaces.disable")
-                : props.language.t("sidebar.workspaces.enable")}
-            </ContextMenu.ItemLabel>
-          </ContextMenu.Item>
+          <Show when={props.ctx.canOpenRemoteVSCode()}>
+            <ContextMenu.Item
+              data-action="project-open-vscode"
+              data-project={base64Encode(props.project.worktree)}
+              onSelect={() => props.ctx.openRemoteVSCode(props.project.worktree)}
+            >
+              <ContextMenu.ItemLabel>
+                {props.language.t("session.header.open.ariaLabel", {
+                  app: props.language.t("session.header.open.app.vscode"),
+                })}
+              </ContextMenu.ItemLabel>
+            </ContextMenu.Item>
+          </Show>
+          <Show when={props.ctx.workspacesEnabled(props.project)}>
+            <ContextMenu.Item
+              onSelect={() => {
+                if (props.ctx.workspaceProject(props.project)) {
+                  props.ctx.addProjectToWorkspace(props.project)
+                  return
+                }
+                props.ctx.showCreateWorkspaceDialog(props.project)
+              }}
+            >
+              <ContextMenu.ItemLabel>
+                {props.ctx.workspaceProject(props.project) ? "Add project" : props.language.t("workspace.new")}
+              </ContextMenu.ItemLabel>
+            </ContextMenu.Item>
+          </Show>
           <ContextMenu.Item
             data-action="project-clear-notifications"
             data-project={base64Encode(props.project.worktree)}
@@ -201,7 +217,6 @@ const ProjectPreviewPanel = (props: {
     <div class="px-4 pt-2 pb-1 flex items-center gap-2">
       <div class="text-14-medium text-text-strong truncate grow">{displayName(props.project)}</div>
     </div>
-    <div class="px-4 pb-2 text-12-medium text-text-weak">{props.language.t("sidebar.project.recentSessions")}</div>
     <div class="px-2 pb-2 flex flex-col gap-2">
       <Show
         when={props.workspaceEnabled()}
@@ -213,6 +228,7 @@ const ProjectPreviewPanel = (props: {
                 session={session}
                 list={props.projectSessions()}
                 slug={base64Encode(props.project.worktree)}
+                root={props.project.worktree}
                 dense
                 showTooltip
                 mobile={props.mobile}
@@ -221,6 +237,20 @@ const ProjectPreviewPanel = (props: {
           </For>
         }
       >
+        <For each={props.projectSessions().slice(0, 2)}>
+          {(session) => (
+            <SessionItem
+              {...props.ctx.sessionProps}
+              session={session}
+              list={props.projectSessions()}
+              slug={base64Encode(props.project.worktree)}
+              root={props.project.worktree}
+              dense
+              showTooltip
+              mobile={props.mobile}
+            />
+          )}
+        </For>
         <For each={props.workspaces()}>
           {(directory) => {
             const sessions = createMemo(() => props.workspaceSessions(directory))
@@ -239,6 +269,7 @@ const ProjectPreviewPanel = (props: {
                       session={session}
                       list={sessions()}
                       slug={base64Encode(directory)}
+                      root={props.project.worktree}
                       dense
                       showTooltip
                       mobile={props.mobile}
@@ -278,7 +309,9 @@ export const SortableProject = (props: {
   const language = useLanguage()
   const sortable = createSortable(props.project.worktree)
   const selected = createMemo(() => props.ctx.currentProject()?.worktree === props.project.worktree)
-  const workspaces = createMemo(() => props.ctx.workspaceIds(props.project).slice(0, 2))
+  const workspaces = createMemo(() =>
+    props.ctx.workspaceIds(props.project).filter((directory) => directory !== props.project.worktree),
+  )
   const workspaceEnabled = createMemo(() => props.ctx.workspacesEnabled(props.project))
   const dirs = createMemo(() => props.ctx.workspaceIds(props.project))
   const [state, setState] = createStore({
@@ -295,21 +328,22 @@ export const SortableProject = (props: {
 
   const label = (directory: string) => {
     const [data] = serverSync().child(directory, { bootstrap: false })
-    const kind =
-      directory === props.project.worktree ? language.t("workspace.type.local") : language.t("workspace.type.sandbox")
-    const name = props.ctx.workspaceLabel(directory, data.vcs?.branch, props.project.id)
-    return `${kind} : ${name}`
+    if (props.project.id?.startsWith("workspace:")) return getFilename(directory)
+    return props.ctx.workspaceLabel(directory, data.vcs?.branch, props.project.id)
   }
 
   const projectStore = createMemo(() => serverSync().child(props.project.worktree, { bootstrap: false })[0])
-  const isWorking = createMemo(() =>
-    dirs().some((directory) => {
-      return Object.keys(serverSync().session.data.session_status).some((id) => {
+  const isWorking = createMemo(() => {
+    if (props.ctx.projectPending(props.project.worktree)) return true
+    const data = serverSync().session.data
+    const sessionIDs = new Set([...Object.keys(data.session_status), ...Object.keys(data.background_working)])
+    return dirs().some((directory) => {
+      return [...sessionIDs].some((id) => {
         if (serverSync().session.get(id)?.directory !== directory) return false
-        return serverSync().session.data.session_working(id)
+        return data.session_working(id) || data.session_background_working(id)
       })
-    }),
-  )
+    })
+  })
   const projectSessions = createMemo(() => sortedRootSessions(projectStore(), props.sortNow()))
   const workspaceSessions = (directory: string) => {
     const [data] = serverSync().child(directory, { bootstrap: false })
@@ -326,13 +360,11 @@ export const SortableProject = (props: {
       overlay={overlay}
       suppressHover={() => state.suppressHover}
       dirs={dirs}
+      ctx={props.ctx}
       onProjectMouseEnter={props.ctx.onProjectMouseEnter}
       onProjectMouseLeave={props.ctx.onProjectMouseLeave}
       onProjectFocus={props.ctx.onProjectFocus}
       navigateToProject={props.ctx.navigateToProject}
-      showEditProjectDialog={props.ctx.showEditProjectDialog}
-      toggleProjectWorkspaces={props.ctx.toggleProjectWorkspaces}
-      workspacesEnabled={props.ctx.workspacesEnabled}
       closeProject={props.ctx.closeProject}
       setMenu={(value) => setState("menu", value)}
       setOpen={(value) => props.ctx.onHoverOpenChanged(props.project.worktree, value)}

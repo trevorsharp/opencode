@@ -28,6 +28,8 @@ import type { PromptSession } from "@/context/prompt"
 import "./titlebar.css"
 import { newTabTooltipKeybind } from "./command-tooltip-keybind"
 import { normalizeSessionInfo } from "@/utils/session"
+import { decode64 } from "@/utils/base64"
+import { cancelPendingProjectNavigation, legacyNewSessionHref, workspaceRootParam } from "@/utils/session-route"
 
 const legacyTitlebarHeight = 40
 const v2TitlebarHeight = 36
@@ -103,10 +105,6 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
     })
   })
 
-  const canBack = createMemo(() => history.index > 0)
-  const canForward = createMemo(() => history.index < history.stack.length - 1)
-  const hasProjects = createMemo(() => layout.projects.list().length > 0)
-  const nav = createMemo(() => (useV2Titlebar() ? settings.general.showNavigation() : true))
   const updateState = createMemo<TitlebarUpdatePillState>(() => {
     const installing = props.update?.installing() ?? false
     const version = props.update?.version()
@@ -353,7 +351,23 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
                   "md:pl-4": !macTrafficLights(),
                 }}
               >
-                <ChannelIndicator debugTools={props.debugTools} />
+                <Show when={props.debugTools}>
+                  {(debugTools) => (
+                    <TooltipV2 placement="bottom" value="Toggle debug tools" class="shrink-0">
+                      <IconButtonV2
+                        type="button"
+                        variant="ghost-muted"
+                        size="large"
+                        class="shrink-0"
+                        icon={<IconV2 name="console" />}
+                        state={debugTools().visible ? "pressed" : undefined}
+                        onClick={debugTools().toggle}
+                        aria-label="Toggle debug tools"
+                        aria-pressed={debugTools().visible}
+                      />
+                    </TooltipV2>
+                  )}
+                </Show>
                 <Show when={windows() || linux()}>
                   <WindowsAppMenu command={command} platform={platform} variant="v2" />
                 </Show>
@@ -503,7 +517,10 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
                             tabIndex={layout.sidebar.opened() ? -1 : undefined}
                             onClick={() => {
                               if (!params.dir) return
-                              navigate(`/${params.dir}/session`)
+                              const directory = decode64(params.dir)
+                              if (!directory) return
+                              cancelPendingProjectNavigation()
+                              navigate(legacyNewSessionHref(directory, workspaceRootParam(location.search)))
                             }}
                             aria-label={language.t("command.session.new")}
                             aria-current={creating() ? "page" : undefined}
@@ -522,34 +539,24 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
                       "duration-180 ease-in": layout.sidebar.opened(),
                     }}
                   >
-                    <Show when={hasProjects() && nav()}>
-                      <div class="flex items-center gap-0 transition-transform">
-                        <Tooltip placement="bottom" value={language.t("common.goBack")} openDelay={800}>
-                          <Button
-                            variant="ghost"
-                            icon="chevron-left"
-                            class="titlebar-icon w-6 h-6 p-0 box-border"
-                            disabled={!canBack()}
-                            onClick={back}
-                            aria-label={language.t("common.goBack")}
-                          />
-                        </Tooltip>
-                        <Tooltip placement="bottom" value={language.t("common.goForward")} openDelay={800}>
-                          <Button
-                            variant="ghost"
-                            icon="chevron-right"
-                            class="titlebar-icon w-6 h-6 p-0 box-border"
-                            disabled={!canForward()}
-                            onClick={forward}
-                            aria-label={language.t("common.goForward")}
-                          />
-                        </Tooltip>
-                      </div>
-                    </Show>
                     <div id="opencode-titlebar-left" class="flex items-center gap-3 min-w-0 px-2" />
                   </div>
                 </div>
-                <ChannelIndicator debugTools={props.debugTools} />
+                <Show when={props.debugTools}>
+                  {(debugTools) => (
+                    <Tooltip placement="bottom" value="Toggle debug tools">
+                      <Button
+                        variant="ghost"
+                        class="titlebar-icon w-8 h-6 p-0 box-border"
+                        onClick={debugTools().toggle}
+                        aria-label="Toggle debug tools"
+                        aria-pressed={debugTools().visible}
+                      >
+                        <Icon size="small" name="console" />
+                      </Button>
+                    </Tooltip>
+                  )}
+                </Show>
               </div>
             </div>
 
@@ -629,32 +636,5 @@ function TitlebarUpdateIconButton(props: { state: TitlebarUpdatePillState }) {
         </span>
       </button>
     </div>
-  )
-}
-
-function ChannelIndicator(props: { debugTools?: { visible: boolean; toggle: () => void } }) {
-  const channel = import.meta.env.VITE_OPENCODE_CHANNEL
-  if (channel === "dev" && props.debugTools) {
-    return (
-      <button
-        type="button"
-        class="bg-icon-interactive-base text-[#FFF] font-medium px-2 rounded-sm uppercase font-mono cursor-pointer"
-        onClick={props.debugTools.toggle}
-        aria-label="Toggle debug tools"
-        aria-pressed={props.debugTools.visible}
-      >
-        DEV
-      </button>
-    )
-  }
-
-  return (
-    <>
-      {["beta", "dev"].includes(channel) && (
-        <div class="bg-icon-interactive-base text-[#FFF] font-medium px-2 rounded-sm uppercase font-mono">
-          {channel.toUpperCase()}
-        </div>
-      )}
-    </>
   )
 }

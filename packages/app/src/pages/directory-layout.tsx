@@ -10,8 +10,9 @@ import { useSync } from "@/context/sync"
 import { decode64 } from "@/utils/base64"
 import { Schema } from "effect"
 import type { ServerConnection } from "@/context/server"
-import { sessionHref } from "@/utils/session-route"
+import { legacySessionHref, sessionHref, workspaceRootParam } from "@/utils/session-route"
 import { useServerSync } from "@/context/server-sync"
+import { useServerSDK } from "@/context/server-sdk"
 
 export function DirectoryDataProvider(
   props: ParentProps<{
@@ -25,12 +26,50 @@ export function DirectoryDataProvider(
   const params = useParams()
   const sync = useSync()
   const serverSync = useServerSync()
+  const serverSDK = useServerSDK()
   const directory = () => (typeof props.directory === "function" ? props.directory() : props.directory)
   const slug = createMemo(() => base64Encode(directory()))
   const href = (sessionID: string) => {
     const server = props.server?.()
     if (server) return sessionHref(server, sessionID)
-    return `/${slug()}/session/${sessionID}`
+    return legacySessionHref(directory(), sessionID, workspaceRootParam(location.search))
+  }
+
+  const requestCardCancellation = (input: {
+    sessionID: string
+    messageID: string
+    partID: string
+    metadataKey?: "workflow" | "schedule"
+  }) => {
+    const metadataKey = input.metadataKey ?? "workflow"
+    const part = (sync().data.part[input.messageID] ?? []).find((candidate) => candidate.id === input.partID)
+    if (!part || part.type !== "tool") return
+    const state = part.state as any
+    const updated = {
+      ...part,
+      state: {
+        ...state,
+        metadata: {
+          ...state.metadata,
+          [metadataKey]: { ...state.metadata?.[metadataKey], cancelRequested: true },
+        },
+      },
+    }
+    const client = serverSDK().createClient({ directory: directory() })
+    void client.part
+      .update({
+        sessionID: input.sessionID,
+        messageID: input.messageID,
+        partID: input.partID,
+        directory: directory(),
+        part: updated as never,
+      })
+      .catch(() => {
+        showToast({
+          variant: "error",
+          title: `Failed to cancel ${metadataKey === "workflow" ? "workflow" : "scheduled job"}`,
+        })
+      })
   }
 
   createEffect(() => {
@@ -65,6 +104,7 @@ export function DirectoryDataProvider(
           directory={directory}
           onNavigateToSession={(sessionID: string) => navigate(href(sessionID))}
           onSessionHref={href}
+          onWorkflowCancel={requestCardCancellation}
         >
           <LocalProvider>{props.children}</LocalProvider>
         </DataProvider>

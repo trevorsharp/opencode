@@ -45,6 +45,7 @@ import { ScopedKey, type ServerScope } from "@/utils/server-scope"
 import { normalizeSessionInfo } from "@/utils/session"
 import type { ServerProtocol } from "@/utils/server-protocol"
 import type { ServerApi } from "@/utils/server"
+import { owningContainer } from "@/utils/project-owner"
 
 type GlobalStore = {
   ready: boolean
@@ -180,7 +181,7 @@ function groupBySession<T extends { id: string; sessionID: string }>(input: T[])
 }
 
 function projectID(directory: string, projects: Project[]) {
-  return projects.find((project) => project.worktree === directory || project.sandboxes?.includes(directory))?.id
+  return owningContainer(projects, directory)?.id
 }
 
 function mergeSession(setStore: SetStoreFunction<State>, session: Session) {
@@ -238,6 +239,7 @@ export const loadProvidersQuery = (
         ])
         return normalizeProviderList(providers.data, models.data, defaultModel.data)
       }),
+    staleTime: 15_000,
   })
 
 type AgentListApi = {
@@ -266,6 +268,7 @@ export const loadAgentsQuery = (
         if ((await protocol) === "v1" && legacy) return normalizeAgentList((await legacy.app.agents()).data ?? [])
         return sdk.list({ location: { directory } }).then((result) => normalizeAgentList(result.data))
       }),
+    staleTime: 15_000,
   })
 
 export const loadCommands = (
@@ -507,7 +510,6 @@ export async function bootstrapDirectory(input: {
             )
           }),
         ),
-      () => Promise.resolve(input.loadSessions(input.directory)),
       input.mcp &&
         (() =>
           input.queryClient.fetchQuery(
@@ -520,7 +522,7 @@ export async function bootstrapDirectory(input: {
           )),
       () =>
         input.queryClient
-          .fetchQuery(loadProvidersQuery(input.scope, input.directory, input.api, input.sdk, input.protocol))
+          .ensureQueryData(loadProvidersQuery(input.scope, input.directory, input.api, input.sdk, input.protocol))
           .catch((err) => {
             const project = getFilename(input.directory)
             showToast({

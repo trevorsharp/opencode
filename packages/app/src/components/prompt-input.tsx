@@ -86,6 +86,8 @@ import type { ReferenceInfo } from "@opencode-ai/sdk/v2/client"
 export { createPromptInputHistory }
 export type { PromptInputControls, PromptInputHistory, PromptInputProps, PromptInputState, PromptInputSubmission }
 
+const LEGACY_COMPOSER_AGENT = "build"
+
 const EXAMPLES = [
   "prompt.example.1",
   "prompt.example.2",
@@ -568,15 +570,13 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const referenceList = createMemo(() =>
     sync()
       .data.reference.filter((reference) => !reference.hidden)
-      .map(
-        (reference): AtOption => ({
-          type: "reference",
-          name: reference.name,
-          path: reference.path,
-          display: reference.name,
-          description: reference.description ?? referenceDescription(reference),
-        }),
-      ),
+      .map((reference): AtOption => ({
+        type: "reference",
+        name: reference.name,
+        path: reference.path,
+        display: reference.name,
+        description: reference.description ?? referenceDescription(reference),
+      })),
   )
 
   const agentList = createMemo(() =>
@@ -586,17 +586,15 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   )
 
   const mcpResourceList = createMemo(() =>
-    Object.values(sync().data.mcp_resource).map(
-      (resource): AtOption => ({
-        type: "resource",
-        name: resource.name,
-        uri: resource.uri,
-        client: resource.server,
-        display: resource.name,
-        description: resource.description,
-        mime: resource.mimeType,
-      }),
-    ),
+    Object.values(sync().data.mcp_resource).map((resource): AtOption => ({
+      type: "resource",
+      name: resource.name,
+      uri: resource.uri,
+      client: resource.server,
+      display: resource.name,
+      description: resource.description,
+      mime: resource.mimeType,
+    })),
   )
 
   const handleAtSelect = (option: AtOption | undefined) => {
@@ -691,29 +689,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     onSelect: handleAtSelect,
   })
 
-  const slashCommands = createMemo<SlashCommand[]>(() => {
-    const builtin = command.options
-      .filter((opt) => !opt.disabled && !opt.id.startsWith("suggested.") && opt.slash)
-      .map((opt) => ({
-        id: opt.id,
-        trigger: opt.slash!,
-        title: opt.title,
-        description: opt.description,
-        keybind: opt.keybind,
-        type: "builtin" as const,
-      }))
-
-    const custom = sync().data.command.map((cmd) => ({
-      id: `custom.${cmd.name}`,
-      trigger: cmd.name,
-      title: cmd.name,
-      description: cmd.description,
-      type: "custom" as const,
-      // source: cmd.source,
-    }))
-
-    return [...custom, ...builtin]
-  })
+  const slashCommands = createMemo<SlashCommand[]>(() => [])
 
   const handleSlashSelect = (cmd: SlashCommand | undefined) => {
     if (!cmd) return
@@ -998,14 +974,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
     if (!shellMode) {
       const atMatch = rawText.substring(0, cursorPosition).match(/@(\S*)$/)
-      const slashMatch = rawText.match(/^\/(\S*)$/)
 
       if (atMatch) {
         atOnInput(atMatch[1])
         setStore({ popover: "at", slashMenu: false, slashMenuQuery: "" })
-      } else if (slashMatch) {
-        slashOnInput(slashMatch[1])
-        setStore({ popover: "slash", slashMenu: false, slashMenuQuery: "" })
       } else {
         closePopover()
       }
@@ -1227,6 +1199,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       onAbort: props.onAbort,
       onSubmit: props.onSubmit,
       model: props.controls.model.selection,
+      agent: LEGACY_COMPOSER_AGENT,
     })
 
   const handleKeyDown = (event: KeyboardEvent) => {
@@ -1417,8 +1390,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     event.preventDefault()
   }
 
-  const agentsLoading = () => props.controls.agents.loading
-  const agentsShouldFadeIn = createMemo<boolean>((prev) => prev ?? agentsLoading())
   const providersLoading = () => props.controls.model.loading
   const providersShouldFadeIn = createMemo<boolean>((prev) => prev ?? providersLoading())
 
@@ -1645,34 +1616,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                 </Button>
               </div>
               <div class="flex items-center gap-1.5 min-w-0 flex-1 h-7">
-                <Show when={!agentsLoading()}>
-                  <div
-                    data-component="prompt-agent-control"
-                    classList={{ "animate-in fade-in duration-300": agentsShouldFadeIn() }}
-                  >
-                    <TooltipKeybind
-                      placement="top"
-                      gutter={4}
-                      title={language.t("command.agent.cycle")}
-                      keybind={command.keybind("agent.cycle")}
-                    >
-                      <Select
-                        size="normal"
-                        options={props.controls.agents.options}
-                        current={props.controls.agents.current}
-                        onSelect={(value) => {
-                          props.controls.agents.select(value)
-                          restoreFocus()
-                        }}
-                        class="capitalize max-w-[160px] text-text-base"
-                        valueClass="truncate text-13-regular text-text-base"
-                        triggerStyle={control()}
-                        triggerProps={{ "data-action": "prompt-agent" }}
-                        variant="ghost"
-                      />
-                    </TooltipKeybind>
-                  </div>
-                </Show>
                 <Show when={!providersLoading()}>
                   <Show when={store.mode !== "shell"}>
                     <div
