@@ -16,6 +16,7 @@ import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
+import { McpEnableTool, McpListTool } from "./mcp-activation"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
@@ -78,6 +79,8 @@ export interface Interface {
     modelID: ModelV2.ID
     agent: Agent.Info
     permission?: PermissionV1.Ruleset
+    /** The MCP servers the requesting session tree has activated. */
+    mcpServers?: ReadonlySet<string>
   }) => Effect.Effect<Tool.Def[]>
 }
 
@@ -109,6 +112,8 @@ const layer = Layer.effect(
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
     const skilltool = yield* SkillTool
+    const mcplist = yield* McpListTool
+    const mcpenable = yield* McpEnableTool
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
     const codeModeTool = codeMode ? yield* codeMode.CodeModeTool : undefined
@@ -214,6 +219,8 @@ const layer = Layer.effect(
           todo: Tool.init(todo),
           search: Tool.init(websearch),
           skill: Tool.init(skilltool),
+          mcpList: Tool.init(mcplist),
+          mcpEnable: Tool.init(mcpenable),
           patch: Tool.init(patchtool),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
@@ -237,6 +244,8 @@ const layer = Layer.effect(
             tool.todo,
             tool.search,
             tool.skill,
+            tool.mcpList,
+            tool.mcpEnable,
             tool.patch,
             ...(tool.execute ? [tool.execute] : []),
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
@@ -275,12 +284,16 @@ const layer = Layer.effect(
     const describeCodeMode = Effect.fn("ToolRegistry.describeCodeMode")(function* (input: {
       agent: Agent.Info
       permission?: PermissionV1.Ruleset
+      mcpServers?: ReadonlySet<string>
     }) {
       if (!codeMode) return
       const ruleset = Permission.merge(input.agent.permission, input.permission ?? [])
-      const tools = Permission.visibleTools(yield* mcp.tools(), ruleset)
+      const tools = Permission.visibleTools(yield* mcp.tools(input.mcpServers), ruleset)
       if (Object.keys(tools).length === 0) return
-      return codeMode.describeCatalog(tools, Object.keys(yield* mcp.clients()).map(McpCatalog.sanitize))
+      const servers = Object.keys(yield* mcp.clients()).filter(
+        (name) => !input.mcpServers || input.mcpServers.has(name),
+      )
+      return codeMode.describeCatalog(tools, servers.map(McpCatalog.sanitize))
     })
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {

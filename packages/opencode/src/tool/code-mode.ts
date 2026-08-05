@@ -3,6 +3,7 @@ import { CallToolResultSchema, type CallToolResult } from "@modelcontextprotocol
 import { Cause, Effect, Schema } from "effect"
 import { CodeMode, Tool as SandboxTool, toolError } from "@opencode-ai/codemode"
 import { MCP } from "@/mcp"
+import { McpActivation } from "@/mcp/activation"
 import { McpCatalog } from "@/mcp/catalog"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
@@ -207,8 +208,11 @@ export const CodeModeTool = Tool.define(
         const agent = yield* agents.get(ctx.agent)
         const session = yield* sessions.get(ctx.sessionID).pipe(Effect.orDie)
         const ruleset = Permission.merge(agent.permission, session.permission ?? [])
-        const mcpTools = Permission.visibleTools(yield* mcp.tools(), ruleset)
-        const servers = Object.keys(yield* mcp.clients()).map(McpCatalog.sanitize)
+        const active = McpActivation.active(yield* McpActivation.root(sessions, ctx.sessionID))
+        const mcpTools = Permission.visibleTools(yield* mcp.tools(active), ruleset)
+        const servers = Object.keys(yield* mcp.clients())
+          .filter((name) => active.has(name))
+          .map(McpCatalog.sanitize)
         const catalog = [...groupByServer(mcpTools, servers).values()].flat()
 
         const calls: CallEntry[] = []

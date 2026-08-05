@@ -619,6 +619,12 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     )
       queue.push(key)
     if (eventType === "mcp.status.changed") void queryClient.invalidateQueries(queryOptionsApi.mcp(key))
+    // Agent-driven connect, auth, failure, and disconnect transitions reach the
+    // MCP status UI through the legacy catalog event.
+    if (eventType === "mcp.tools.changed") {
+      void queryClient.invalidateQueries(queryOptionsApi.mcp(key))
+      void queryClient.invalidateQueries(queryOptionsApi.mcpResources(key))
+    }
     if (eventType === "mcp.resources.changed") void queryClient.invalidateQueries(queryOptionsApi.mcpResources(key))
     const [store, setStore] = existing
     applyDirectoryEvent({

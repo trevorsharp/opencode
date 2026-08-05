@@ -19,6 +19,7 @@ import { Plugin } from "../plugin"
 import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
+import { McpActivation } from "@/mcp/activation"
 import { LSP } from "@/lsp/lsp"
 import { ulid } from "ulid"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
@@ -745,6 +746,8 @@ const layer = Layer.effect(
         if (part.type === "file") {
           if (part.source?.type === "resource") {
             const { clientName, uri } = part.source
+            const active = McpActivation.active(yield* McpActivation.root(sessions, input.sessionID))
+            if (!active.has(clientName)) throw new Error(`MCP server is not active for this session: ${clientName}`)
             yield* Effect.logInfo("mcp resource", { clientName, uri, mime: part.mime })
             const pieces: Draft<SessionV1.Part>[] = [
               {
@@ -1279,7 +1282,9 @@ const layer = Layer.effect(
             const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
             const promptOps = yield* ops()
 
-            const tools = yield* SessionTools.resolve({
+            // Resolvable again mid-turn: an external runtime whose agent activates
+            // an MCP server rebuilds its tool facade from exactly this resolution.
+            const resolveTools = SessionTools.resolve({
               agent,
               session,
               model,
@@ -1292,18 +1297,29 @@ const layer = Layer.effect(
               Effect.provideService(Permission.Service, permission),
               Effect.provideService(ToolRegistry.Service, registry),
               Effect.provideService(MCP.Service, mcp),
+              Effect.provideService(Session.Service, sessions),
               Effect.provideService(Truncate.Service, truncate),
               Effect.provideService(RuntimeFlags.Service, flags),
             )
-
-            if (lastUser.format?.type === "json_schema") {
-              tools["StructuredOutput"] = createStructuredOutputTool({
-                schema: lastUser.format.schema,
-                onSuccess(output) {
-                  structured = output
-                },
-              })
-            }
+            const resolveMcpInstructions = Effect.gen(function* () {
+              const active = McpActivation.active(yield* McpActivation.root(sessions, sessionID))
+              return yield* sys.mcp(agent, session.permission, active)
+            })
+            // Part of every resolution, not only the first one: a re-resolved tool
+            // map is the map the turn dispatches against.
+            const structuredFormat = lastUser.format?.type === "json_schema" ? lastUser.format : undefined
+            const resolveTurnTools = Effect.gen(function* () {
+              const resolved = yield* resolveTools
+              if (structuredFormat)
+                resolved["StructuredOutput"] = createStructuredOutputTool({
+                  schema: structuredFormat.schema,
+                  onSuccess(output) {
+                    structured = output
+                  },
+                })
+              return resolved
+            })
+            const tools = yield* resolveTurnTools
 
             if (step === 1)
               yield* summary.summarize({ sessionID, messageID: lastUser.id }).pipe(Effect.ignore, Effect.forkIn(scope))
@@ -1314,7 +1330,7 @@ const layer = Layer.effect(
               sys.skills(agent),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
-              sys.mcp(agent, session.permission),
+              resolveMcpInstructions,
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
             const system = [
@@ -1348,6 +1364,10 @@ const layer = Layer.effect(
               ],
               promptMessages,
               tools,
+              mcpInstructions,
+              refresh: Effect.gen(function* () {
+                return { tools: yield* resolveTurnTools, mcpInstructions: yield* resolveMcpInstructions }
+              }),
               model,
               resumeSessionID: claudeResumeSessionID({
                 messages: msgs,

@@ -66,6 +66,8 @@ export type Call = {
 export type Registration = {
   readonly tools: ReadonlyArray<Tool>
   readonly call: (call: Call) => Promise<Result>
+  /** Instructions from the MCP servers this execution's session tree activated. */
+  readonly instructions?: string
 }
 
 export type Handle = {
@@ -89,7 +91,10 @@ let listener: ReturnType<typeof Bun.serve> | undefined
 export async function register(registration: Registration): Promise<Handle> {
   const server = new Server(
     { name: SERVER, version: "1.0.0" },
-    { capabilities: { tools: {}, logging: {} }, instructions: INSTRUCTIONS },
+    {
+      capabilities: { tools: {}, logging: {} },
+      instructions: [INSTRUCTIONS, registration.instructions].filter((value) => value).join("\n\n"),
+    },
   )
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => crypto.randomUUID(),

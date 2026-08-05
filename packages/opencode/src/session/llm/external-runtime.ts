@@ -117,6 +117,8 @@ const TOOL_HELP_DESCRIPTION =
  */
 const FACADE_TOOLS = [
   "notify",
+  "mcp_list",
+  "mcp_enable",
   "workflow_run",
   "workflow_status",
   "workflow_cancel",
@@ -137,6 +139,22 @@ const DEFERRED_TOOL = "question"
 
 const DEFERRED_RESULT =
   "The questions are now in front of the user. End your turn immediately without any further work or commentary; the user's answers arrive as the next prompt in this same conversation."
+
+/**
+ * The one facade tool that can change what the facade itself offers. Its result
+ * only becomes reachable through a new registration, so the execution that ran it
+ * has to end before opencode can hand the agent the refreshed catalog.
+ */
+const ACTIVATION_TOOL = "mcp_enable"
+
+const ACTIVATION_RESUME =
+  "Activation is complete and it changed the tools available to you. End this execution immediately without any further work or commentary; opencode will resume this conversation with the refreshed tools."
+
+const ACTIVATION_DEFERRED =
+  "Activation is complete, but this turn cannot be resumed, so the newly available tools appear on the next user turn rather than now."
+
+const ACTIVATION_CONTINUE =
+  "MCP activation completed and opencode refreshed your tools. Continue the original task; find the newly available opencode tools with ToolSearch."
 
 /** How long a facade call waits to be matched with the call the agent reported. */
 const RENDEZVOUS_MS = 60_000
@@ -170,6 +188,13 @@ export type StreamInput = {
   readonly parentSessionID?: string
   /** Pending questions a cancelled turn has to take back. */
   readonly questions: Pick<Question.Interface, "list" | "reject">
+  /** The active MCP servers' instructions, carried by the facade registration. */
+  readonly mcpInstructions?: string
+  /**
+   * Resolves the turn's tools and MCP instructions again. Absent when the caller
+   * cannot re-resolve, in which case activation only reaches the next user turn.
+   */
+  readonly refresh?: Effect.Effect<{ tools: Record<string, Tool>; mcpInstructions?: string }>
 }
 
 const messageText = (message: ModelMessage) => {
@@ -239,16 +264,16 @@ function prompt(messages: ModelMessage[], structured: boolean, resumeSessionID?:
  * MCP tool has no provable implementation, since assembly order alone decided which
  * one the map kept, so neither is offered rather than running the wrong tool.
  */
-function catalog(input: StreamInput) {
-  const mcp = (name: string) => input.tools[name]?.type === "dynamic"
+function catalog(source: Record<string, Tool>, input: StreamInput) {
+  const mcp = (name: string) => source[name]?.type === "dynamic"
   const reserved = [...FACADE_TOOLS, ...(input.parentSessionID ? [] : FACADE_ROOT_TOOLS), TOOL_HELP]
   const limit = input.adapter.toolDescriptionLimit
   const help = new Map<string, string>()
-  const tools = Object.keys(input.tools)
+  const tools = Object.keys(source)
     .filter((name) => name !== TOOL_HELP)
     .filter((name) => (mcp(name) ? !reserved.includes(name) : reserved.includes(name)))
     .flatMap((name) => {
-      const item = input.tools[name]
+      const item = source[name]
       if (!item?.execute) return []
       const description = item.description ?? ""
       if (limit === undefined || Buffer.byteLength(description) <= limit)
@@ -268,7 +293,7 @@ function catalog(input: StreamInput) {
       },
     })
   return {
-    ambiguous: [...new Set([...reserved.filter(mcp), ...(input.tools[TOOL_HELP] ? [TOOL_HELP] : [])])],
+    ambiguous: [...new Set([...reserved.filter(mcp), ...(source[TOOL_HELP] ? [TOOL_HELP] : [])])],
     help,
     tools,
   }
@@ -476,39 +501,57 @@ export function stream(input: StreamInput): Stream.Stream<LLMEvent, unknown> {
         catch: (error) => new Error(errorMessage(error)),
       })
 
-      const exposed = catalog(input)
-      if (exposed.ambiguous.length)
-        yield* Effect.logWarning("facade tool names are ambiguous and were not exposed", {
-          tools: exposed.ambiguous.join(","),
-        })
-      if (exposed.help.size)
-        yield* Effect.logWarning("facade tool descriptions exceeded the external agent limit", {
-          limit: input.adapter.toolDescriptionLimit?.toString(),
-          tools: [...exposed.help].map(([name, description]) => `${name}:${Buffer.byteLength(description)}`).join(","),
-        })
-      const inputTools = exposed.help.size
-        ? {
-            ...input.tools,
-            [TOOL_HELP]: tool({
-              description: TOOL_HELP_DESCRIPTION,
-              inputSchema: jsonSchema({
-                type: "object",
-                properties: { name: { type: "string", enum: [...exposed.help.keys()] } },
-                required: ["name"],
-                additionalProperties: false,
+      // The facade catalog belongs to one execution, not to the stream: an
+      // activation that changes what the session tree offers is rebuilt from
+      // scratch here and only reaches the agent through the next registration.
+      const build = Effect.fnUntraced(function* (source: Record<string, Tool>, instructions: string | undefined) {
+        const exposed = catalog(source, input)
+        if (exposed.ambiguous.length)
+          yield* Effect.logWarning("facade tool names are ambiguous and were not exposed", {
+            tools: exposed.ambiguous.join(","),
+          })
+        if (exposed.help.size)
+          yield* Effect.logWarning("facade tool descriptions exceeded the external agent limit", {
+            limit: input.adapter.toolDescriptionLimit?.toString(),
+            tools: [...exposed.help]
+              .map(([name, description]) => `${name}:${Buffer.byteLength(description)}`)
+              .join(","),
+          })
+        const inputTools = exposed.help.size
+          ? {
+              ...source,
+              [TOOL_HELP]: tool({
+                description: TOOL_HELP_DESCRIPTION,
+                inputSchema: jsonSchema({
+                  type: "object",
+                  properties: { name: { type: "string", enum: [...exposed.help.keys()] } },
+                  required: ["name"],
+                  additionalProperties: false,
+                }),
+                async execute(value) {
+                  if (!isRecord(value) || typeof value.name !== "string") throw new Error("tool_help requires a name")
+                  const description = exposed.help.get(value.name)
+                  if (description === undefined)
+                    throw new Error(`No extended description is available for "${value.name}"`)
+                  return description
+                },
               }),
-              async execute(value) {
-                if (!isRecord(value) || typeof value.name !== "string") throw new Error("tool_help requires a name")
-                const description = exposed.help.get(value.name)
-                if (description === undefined)
-                  throw new Error(`No extended description is available for "${value.name}"`)
-                return description
-              },
-            }),
-          }
-        : input.tools
-      const tools = LLMNativeRuntime.nativeTools(inputTools, input)
-      const facade = exposed.tools.length ? rendezvous(new Set(exposed.tools.map((tool) => tool.name))) : undefined
+            }
+          : source
+        return {
+          exposed,
+          instructions,
+          tools: LLMNativeRuntime.nativeTools(inputTools, input),
+          /** Sorted, so only a real catalog change counts as one. */
+          names: exposed.tools.map((item) => item.name).toSorted((left, right) => left.localeCompare(right)),
+        }
+      })
+
+      let current = yield* build(input.tools, input.mcpInstructions)
+      let pendingRefresh: typeof current | undefined
+      let facade: ReturnType<typeof rendezvous> | undefined
+      let executing: { readonly translator: Translator; readonly index: number } | undefined
+      const opened: ReturnType<typeof rendezvous>[] = []
 
       // The calls opencode still owns when an execution ends are the user's
       // questions, and a turn that ends without delivering them owes the user no
@@ -530,13 +573,12 @@ export function stream(input: StreamInput): Stream.Stream<LLMEvent, unknown> {
         asked.length = 0
         yield* Effect.forEach(pending, (request) => input.questions.reject(request.id).pipe(Effect.ignore))
       })
-      if (facade)
-        yield* Effect.addFinalizer(() =>
-          Effect.gen(function* () {
-            facade.close()
-            if (asked.length) yield* withdraw
-          }),
-        )
+      yield* Effect.addFinalizer(() =>
+        Effect.gen(function* () {
+          for (const item of opened) item.close()
+          if (asked.length) yield* withdraw
+        }),
+      )
 
       let settled = false
       const admit = (event: LLMEvent) => {
@@ -545,7 +587,7 @@ export function stream(input: StreamInput): Stream.Stream<LLMEvent, unknown> {
         return true
       }
       const dispatch = (event: Extract<LLMEvent, { type: "tool-call" }>) =>
-        ToolRuntime.dispatch(tools, event).pipe(
+        ToolRuntime.dispatch(current.tools, event).pipe(
           Effect.map((dispatched) => ({
             events: dispatched.events,
             result: toResult(dispatched.result),
@@ -577,11 +619,35 @@ export function stream(input: StreamInput): Stream.Stream<LLMEvent, unknown> {
               return Stream.empty
             }
             const dispatched = yield* dispatch(event)
+            // Activation settles normally, then opencode re-resolves the turn. A
+            // catalog that actually changed can only reach the agent through a
+            // fresh registration, so this execution is asked to end and the turn
+            // continues with the rebuilt facade.
+            if (event.name === ACTIVATION_TOOL && input.refresh) {
+              const next = yield* Effect.flatMap(input.refresh, (refreshed) =>
+                build(refreshed.tools, refreshed.mcpInstructions),
+              )
+              const changed =
+                next.names.join("\u0000") !== current.names.join("\u0000") || next.instructions !== current.instructions
+              const resumable =
+                executing !== undefined &&
+                executing.translator.session?.() !== undefined &&
+                executing.index + 1 < MAX_EXECUTIONS
+              if (changed && resumable) pendingRefresh = next
+              const directive = changed ? (resumable ? ACTIVATION_RESUME : ACTIVATION_DEFERRED) : undefined
+              facade.settle(
+                event.id,
+                directive
+                  ? { ...dispatched.result, content: [...dispatched.result.content, { type: "text", text: directive }] }
+                  : dispatched.result,
+              )
+              return Stream.fromIterable(dispatched.events.filter((result) => admit(result)))
+            }
             facade.settle(event.id, dispatched.result)
             return Stream.fromIterable(dispatched.events.filter((result) => admit(result)))
           }
           if (event.providerExecuted && !dispatchRequested(input.adapter.id, event)) return Stream.empty
-          const dispatched = yield* ToolRuntime.dispatch(tools, event)
+          const dispatched = yield* ToolRuntime.dispatch(current.tools, event)
           return Stream.fromIterable(dispatched.events.filter((result) => admit(result)))
         })
       const translate = (produce: () => ReadonlyArray<LLMEvent>) =>
@@ -602,32 +668,59 @@ export function stream(input: StreamInput): Stream.Stream<LLMEvent, unknown> {
       ): Stream.Stream<LLMEvent, unknown> =>
         Stream.unwrap(
           Effect.gen(function* () {
-            // One MCP server and stateful transport per execution: a released
-            // registration is never reachable again, and a new process gets a new
-            // handshake rather than reusing a settled one.
-            const handle = facade
+            // One catalog, rendezvous, MCP server, token, and stateful transport
+            // per execution: a released registration is never reachable again, a
+            // new process gets a new handshake rather than reusing a settled one,
+            // and the rendezvous accepts exactly the names this catalog offers.
+            const built = current
+            // Instructions alone still earn a registration: the facade is the only
+            // channel an external execution has for the active MCP servers'
+            // instructions, so a server that contributes nothing but instructions
+            // must not lose them to an empty tool catalog.
+            const matcher =
+              built.exposed.tools.length || built.instructions
+                ? rendezvous(new Set(built.exposed.tools.map((item) => item.name)))
+                : undefined
+            if (matcher) opened.push(matcher)
+            facade = matcher
+            const handle = matcher
               ? yield* Effect.acquireRelease(
-                  Effect.promise(() => LLMExternalMCP.register({ tools: exposed.tools, call: facade.call })),
+                  Effect.promise(() =>
+                    LLMExternalMCP.register({
+                      tools: built.exposed.tools,
+                      call: matcher.call,
+                      instructions: built.instructions,
+                    }),
+                  ),
                   (registered) => Effect.promise(() => registered.close()),
                 )
               : undefined
+            // The scope only guarantees release when the turn ends, which is too
+            // late for a continuation: this execution's token has to stop being
+            // authorized, and its rendezvous has to stop matching, before the next
+            // execution starts. Closing twice is harmless.
+            const release = Effect.suspend(() => {
+              matcher?.close()
+              return handle ? Effect.promise(() => handle.close()) : Effect.void
+            })
             const turn = {
               ...input.turn,
               resumeSessionID,
               step: index,
               facade:
-                handle && facade
+                handle && matcher
                   ? {
                       config: handle.config,
                       token: handle.token,
                       env: handle.env,
-                      resolve: facade.resolve,
-                      called: facade.called,
-                      owned: facade.owned,
+                      resolve: matcher.resolve,
+                      called: matcher.called,
+                      owned: matcher.owned,
                     }
                   : undefined,
             }
             const translator = input.adapter.translate(turn)
+            executing = { translator, index }
             const command = yield* Effect.try({
               try: () => input.adapter.command({ ...turn, prompt: parts }),
               catch: (error) => new Error(errorMessage(error)),
@@ -662,7 +755,7 @@ export function stream(input: StreamInput): Stream.Stream<LLMEvent, unknown> {
               // produces none.
               Stream.takeUntil(() => translator.complete()),
               Stream.flatMap((events) => expand(events)),
-              Stream.concat(Stream.unwrap(conclude(translator, index, handle))),
+              Stream.concat(Stream.unwrap(conclude(translator, index, handle, release))),
             )
           }),
         )
@@ -671,6 +764,7 @@ export function stream(input: StreamInput): Stream.Stream<LLMEvent, unknown> {
         translator: Translator,
         index: number,
         handle: LLMExternalMCP.Handle | undefined,
+        release: Effect.Effect<void>,
       ): Effect.Effect<Stream.Stream<LLMEvent, unknown>, Error> =>
         Effect.gen(function* () {
           if (handle && !handle.connected())
@@ -680,6 +774,8 @@ export function stream(input: StreamInput): Stream.Stream<LLMEvent, unknown> {
           if (!translator.complete()) return translate(() => translator.settle())
 
           const pending = deferred.splice(0)
+          const refreshed = pendingRefresh
+          pendingRefresh = undefined
           const resume = translator.session?.()
           const resumable = resume !== undefined && index + 1 < MAX_EXECUTIONS
           // A turn that cannot resume the agent has nowhere to deliver an answer, so
@@ -699,7 +795,14 @@ export function stream(input: StreamInput): Stream.Stream<LLMEvent, unknown> {
             .map((item) => item.text)
             .filter((value) => value)
             .join("\n\n")
-          const continued = resumable && text !== ""
+          // Questions and an activation raised in one execution continue through
+          // one resumed execution, so activation costs no extra execution of its own.
+          const continued = resumable && (text !== "" || refreshed !== undefined)
+          const continuation = [text, refreshed ? ACTIVATION_CONTINUE : ""].filter((value) => value).join("\n\n")
+          if (continued && refreshed) current = refreshed
+          // This execution is over either way, so its facade stops answering here
+          // rather than at the end of the turn.
+          yield* release
           return expand(answered.flatMap((item) => item.events)).pipe(
             Stream.concat(
               translate(() => {
@@ -711,7 +814,7 @@ export function stream(input: StreamInput): Stream.Stream<LLMEvent, unknown> {
             Stream.concat(
               continued && resume !== undefined
                 ? expand([LLMEvent.stepStart({ index: index + 1 })]).pipe(
-                    Stream.concat(execution([{ type: "text", text }], resume, index + 1)),
+                    Stream.concat(execution([{ type: "text", text: continuation }], resume, index + 1)),
                   )
                 : Stream.empty,
             ),

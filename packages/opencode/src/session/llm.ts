@@ -52,6 +52,14 @@ export type StreamInput = {
   retries?: number
   resumeSessionID?: string
   toolChoice?: "auto" | "required" | "none"
+  /** MCP server instructions for the servers this session tree has activated. */
+  mcpInstructions?: string
+  /**
+   * Resolves this turn's tools and MCP instructions again. An external runtime
+   * whose agent activates an MCP server mid-turn rebuilds its facade from this;
+   * the ordinary provider loop simply resolves again on its next step.
+   */
+  refresh?: Effect.Effect<{ tools: Record<string, Tool>; mcpInstructions?: string }>
 }
 
 export type StreamRequest = StreamInput & {
@@ -145,6 +153,15 @@ const live: Layer.Layer<
             messages: input.messages,
             promptMessages: input.promptMessages,
             tools,
+            mcpInstructions: input.mcpInstructions,
+            // A refreshed tool map passes through the same prompt-level and
+            // agent-level disabling the first one did.
+            refresh: input.refresh?.pipe(
+              Effect.map((next) => ({
+                tools: LLMRequestPrep.resolveTools({ ...input, tools: next.tools }),
+                mcpInstructions: next.mcpInstructions,
+              })),
+            ),
             parentSessionID: input.parentSessionID,
             questions,
             process: appProcess,
