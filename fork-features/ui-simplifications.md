@@ -20,6 +20,7 @@ The control removals apply only to legacy entry points. Shared settings dialogs,
 - Newly opened projects are appended to the bottom of the project list instead of inserted at the top.
 - Opening an existing project does not reorder it.
 - Manual project reordering remains unchanged.
+- The legacy mobile sidebar remains between the titlebar and device safe areas in fullscreen mode.
 - No persistence or database behavior changes.
 
 ## Validation
@@ -31,6 +32,7 @@ The control removals apply only to legacy entry points. Shared settings dialogs,
 - Shared settings, help, search, and navigation implementations continue to compile.
 - Open a project that is not already listed and confirm it appears after all existing projects.
 - Reopen or select an existing project and confirm its position does not change.
+- Open the mobile sidebar in fullscreen mode and confirm it does not overlap the status bar or home indicator.
 
 ## Non-Goals
 

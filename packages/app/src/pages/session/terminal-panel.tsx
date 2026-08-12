@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, on, onCleanup, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
 import { makeEventListener } from "@solid-primitives/event-listener"
+import { createResizeObserver } from "@solid-primitives/resize-observer"
 import { Tabs } from "@opencode-ai/ui/tabs"
 import { ResizeHandle } from "@opencode-ai/ui/resize-handle"
 import { IconButton } from "@opencode-ai/ui/icon-button"
@@ -44,7 +45,8 @@ export function TerminalPanel() {
     autoCreated: false,
     activeDraggable: undefined as string | undefined,
     recovered: {} as Record<string, boolean>,
-    view: typeof window === "undefined" ? 1000 : (window.visualViewport?.height ?? window.innerHeight),
+    view:
+      typeof document === "undefined" ? 1000 : (document.getElementById("root")?.clientHeight ?? window.innerHeight),
   })
 
   const max = () => store.view * 0.6
@@ -53,12 +55,19 @@ export function TerminalPanel() {
   onMount(() => {
     if (typeof window === "undefined") return
 
-    const sync = () => setStore("view", window.visualViewport?.height ?? window.innerHeight)
-    const port = window.visualViewport
+    const app = document.getElementById("root")
+    const panel = root
+    if (!app || !panel) return
 
+    const sync = () => setStore("view", app.clientHeight)
+    const reveal = () => {
+      if (!panel.contains(document.activeElement)) return
+      requestAnimationFrame(() => panel.scrollIntoView({ block: "end", behavior: "instant" }))
+    }
     sync()
-    makeEventListener(window, "resize", sync)
-    if (port) makeEventListener(port, "resize", sync)
+    createResizeObserver(app, sync)
+    makeEventListener(panel, "focusin", reveal)
+    if (window.visualViewport) makeEventListener(window.visualViewport, "resize", reveal)
   })
 
   createEffect(() => {

@@ -184,9 +184,12 @@ Installed PWAs can be obscured or shifted incorrectly when the visual viewport c
 
 ### Expected Behavior
 
-- The application follows the current visual viewport height.
-- Viewport offset changes translate the application root correctly.
-- Resize and scroll events update the layout.
+- The application preserves its full layout height when the mobile keyboard shrinks the visual viewport.
+- The visual viewport scrolls over the full layout to keep focused controls visible instead of collapsing the layout.
+- The legacy terminal panel derives its maximum height from the full application layout rather than the keyboard-height viewport.
+- Focusing the legacy terminal scrolls its visible panel above the mobile keyboard as the keyboard opens.
+- Resize, scroll, and focus changes update the layout immediately and again after viewport changes settle.
+- Dismissing the mobile keyboard restores the application to its original screen position.
 - Safe-area insets are respected.
 - Browser-tab behavior remains unchanged when PWA-specific handling is unnecessary.
 - Event listeners are cleaned up when the layout unmounts.

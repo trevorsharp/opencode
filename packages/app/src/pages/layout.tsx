@@ -150,16 +150,41 @@ export default function LegacyLayout(props: ParentProps) {
     const root = document.getElementById("root")
     if (!viewport || !root) return
 
+    let viewportFrame: number | undefined
+    let viewportTimer: number | undefined
+    let layoutWidth = viewport.width
+    let layoutHeight = viewport.height
+
     const syncViewport = () => {
       if (!viewport.height) return
-      root.style.height = `${viewport.height}px`
-      root.style.transform = `translateY(${viewport.offsetTop}px)`
+      if (Math.abs(viewport.width - layoutWidth) <= 1) layoutHeight = Math.max(layoutHeight, viewport.height)
+      root.style.height = `${layoutHeight}px`
+      root.style.removeProperty("transform")
+      if (viewport.height >= layoutHeight - 1) window.scrollTo(0, 0)
+    }
+
+    const settleViewport = () => {
+      if (Math.abs(viewport.width - layoutWidth) > 1) {
+        layoutWidth = viewport.width
+        layoutHeight = viewport.height
+      }
+      syncViewport()
+    }
+
+    const scheduleViewportSync = () => {
+      if (viewportFrame !== undefined) cancelAnimationFrame(viewportFrame)
+      if (viewportTimer !== undefined) clearTimeout(viewportTimer)
+      viewportFrame = requestAnimationFrame(syncViewport)
+      viewportTimer = window.setTimeout(settleViewport, 300)
     }
 
     syncViewport()
-    makeEventListener(viewport, "resize", syncViewport)
-    makeEventListener(viewport, "scroll", syncViewport)
+    makeEventListener(viewport, "resize", scheduleViewportSync)
+    makeEventListener(viewport, "scroll", scheduleViewportSync)
+    makeEventListener(document, "focusout", scheduleViewportSync)
     onCleanup(() => {
+      if (viewportFrame !== undefined) cancelAnimationFrame(viewportFrame)
+      if (viewportTimer !== undefined) clearTimeout(viewportTimer)
       root.style.removeProperty("height")
       root.style.removeProperty("transform")
     })
@@ -2690,9 +2715,13 @@ export default function LegacyLayout(props: ParentProps) {
               <div>
                 <div
                   classList={{
-                    "fixed inset-x-0 top-10 bottom-0 z-40 transition-opacity duration-200": true,
+                    "fixed inset-x-0 z-40 transition-opacity duration-200": true,
                     "opacity-100 pointer-events-auto": layout.mobileSidebar.opened(),
                     "opacity-0 pointer-events-none": !layout.mobileSidebar.opened(),
+                  }}
+                  style={{
+                    top: "calc(2.5rem + env(safe-area-inset-top, 0px))",
+                    bottom: "env(safe-area-inset-bottom, 0px)",
                   }}
                   onClick={(e) => {
                     if (e.target === e.currentTarget) layout.mobileSidebar.hide()
@@ -2702,9 +2731,13 @@ export default function LegacyLayout(props: ParentProps) {
                   aria-label={language.t("sidebar.nav.projectsAndSessions")}
                   data-component="sidebar-nav-mobile"
                   classList={{
-                    "@container fixed top-10 bottom-0 left-0 z-50 w-full max-w-[400px] overflow-hidden border-r border-border-weaker-base bg-background-base transition-transform duration-200 ease-out": true,
+                    "@container fixed left-0 z-50 w-full max-w-[400px] overflow-hidden border-r border-border-weaker-base bg-background-base transition-transform duration-200 ease-out": true,
                     "translate-x-0": layout.mobileSidebar.opened(),
                     "-translate-x-full": !layout.mobileSidebar.opened(),
+                  }}
+                  style={{
+                    top: "calc(2.5rem + env(safe-area-inset-top, 0px))",
+                    bottom: "env(safe-area-inset-bottom, 0px)",
                   }}
                   onClick={(e) => e.stopPropagation()}
                 >
