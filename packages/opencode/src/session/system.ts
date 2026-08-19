@@ -1,5 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Context, Effect, Layer } from "effect"
+import path from "path"
 
 import { InstanceState } from "@/effect/instance-state"
 
@@ -23,6 +24,8 @@ import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/l
 import { Reference } from "@opencode-ai/core/reference"
 import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Global } from "@opencode-ai/core/global"
 
 export function provider(model: Provider.Model) {
   if (model.api.id.includes("muse")) {
@@ -49,6 +52,7 @@ export function provider(model: Provider.Model) {
 }
 
 export interface Interface {
+  readonly base: (model: Provider.Model) => Effect.Effect<string[]>
   readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
   readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
   readonly mcp: (
@@ -67,8 +71,24 @@ const layer = Layer.effect(
     const skill = yield* Skill.Service
     const mcp = yield* MCP.Service
     const locations = yield* LocationServiceMap.Service
+    const fs = yield* FSUtil.Service
+    const global = yield* Global.Service
 
     return Service.of({
+      base: Effect.fn("SystemPrompt.base")(function* (model: Provider.Model) {
+        const filepath = path.join(global.config, "SYSTEM.md")
+        return yield* fs.readFileString(filepath).pipe(
+          Effect.map((content) => [content]),
+          Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(provider(model))),
+          Effect.catch((error) =>
+            Effect.logWarning("failed to read system prompt override, using built-in prompt", {
+              path: filepath,
+              error,
+            }).pipe(Effect.as(provider(model))),
+          ),
+        )
+      }),
+
       environment: Effect.fn("SystemPrompt.environment")(function* (model: Provider.Model) {
         const ctx = yield* InstanceState.context
         const references = yield* Effect.gen(function* () {
@@ -157,7 +177,7 @@ const locationServiceMapNode = LayerNode.make({
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [Skill.node, MCP.node, locationServiceMapNode],
+  deps: [Skill.node, MCP.node, locationServiceMapNode, FSUtil.node, Global.node],
 })
 
 export * as SystemPrompt from "./system"

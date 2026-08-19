@@ -8,7 +8,6 @@ import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "../message-v2"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
-import { SystemPrompt } from "../system"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { Effect, Record } from "effect"
 import { jsonSchema, tool as aiTool, type ModelMessage, type Tool } from "ai"
@@ -24,6 +23,7 @@ type PrepareInput = {
   readonly model: Provider.Model
   readonly agent: Agent.Info
   readonly permission?: PermissionV1.Ruleset
+  readonly base: string[]
   readonly system: string[]
   readonly messages: ModelMessage[]
   readonly small?: boolean
@@ -56,13 +56,7 @@ const mergeOptions = (target: Record<string, any>, source: Record<string, any> |
 export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: PrepareInput) {
   const isOpenaiOauth = input.provider.id === "openai" && input.auth?.type === "oauth"
   const system = [
-    [
-      ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)),
-      ...input.system,
-      ...(input.user.system ? [input.user.system] : []),
-    ]
-      .filter((x) => x)
-      .join("\n"),
+    [...input.base, ...input.system, ...(input.user.system ? [input.user.system] : [])].filter((x) => x).join("\n"),
   ]
 
   const header = system[0]
@@ -102,12 +96,10 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     isOpenaiOauth || input.isWorkflow
       ? input.messages
       : [
-          ...system.map(
-            (x): ModelMessage => ({
-              role: "system",
-              content: x,
-            }),
-          ),
+          ...system.map((x): ModelMessage => ({
+            role: "system",
+            content: x,
+          })),
           ...input.messages,
         ]
 

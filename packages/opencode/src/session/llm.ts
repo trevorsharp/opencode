@@ -34,6 +34,7 @@ import { AppProcess } from "@opencode-ai/core/process"
 import { InstanceState } from "@/effect/instance-state"
 import { Question } from "@/question"
 import { Todo } from "./todo"
+import { SystemPrompt } from "./system"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
@@ -88,6 +89,7 @@ const live: Layer.Layer<
   | AppProcess.Service
   | Question.Service
   | Todo.Service
+  | SystemPrompt.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -102,6 +104,7 @@ const live: Layer.Layer<
     const appProcess = yield* AppProcess.Service
     const questions = yield* Question.Service
     const todo = yield* Todo.Service
+    const systemPrompt = yield* SystemPrompt.Service
 
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
       yield* Effect.logInfo("stream", {
@@ -171,12 +174,13 @@ const live: Layer.Layer<
         }
       }
 
-      const [language, cfg, item, info] = yield* Effect.all(
+      const [language, cfg, item, info, base] = yield* Effect.all(
         [
           provider.getLanguage(input.model),
           config.get(),
           provider.getProvider(input.model.providerID),
           auth.get(input.model.providerID),
+          input.agent.prompt ? Effect.succeed([input.agent.prompt]) : systemPrompt.base(input.model),
         ],
         { concurrency: "unbounded" },
       )
@@ -189,6 +193,7 @@ const live: Layer.Layer<
         plugin,
         flags,
         isWorkflow,
+        base,
       })
 
       // Wire up toolExecutor for DWS workflow models so that tool calls
@@ -480,6 +485,7 @@ export const node = LayerNode.make({
     AppProcess.node,
     Question.node,
     Todo.node,
+    SystemPrompt.node,
   ],
 })
 
