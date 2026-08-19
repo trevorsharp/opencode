@@ -72,7 +72,10 @@ export class OutputFormatJsonSchema extends Schema.Class<OutputFormatJsonSchema>
   retryCount: NonNegativeInt.pipe(Schema.optional, Schema.withDecodingDefault(Effect.succeed(2))),
 }) {}
 
-export const Format = Schema.Union([OutputFormatText, OutputFormatJsonSchema]).annotate({
+export const Format = Schema.Union([
+  Schema.Struct(OutputFormatText.fields),
+  Schema.Struct(OutputFormatJsonSchema.fields),
+]).annotate({
   discriminator: "type",
   identifier: "OutputFormat",
 })
@@ -242,6 +245,7 @@ export const StepFinishPart = Schema.Struct({
   type: Schema.Literal("step-finish"),
   reason: Schema.String,
   snapshot: Schema.optional(Schema.String),
+  metadata: Schema.optional(Schema.Record(Schema.String, Schema.Any)),
   cost: Schema.Finite,
   tokens: Schema.Struct({
     total: Schema.optional(Schema.Finite),
@@ -260,6 +264,7 @@ export const ToolStatePending = Schema.Struct({
   status: Schema.Literal("pending"),
   input: Schema.Record(Schema.String, Schema.Any),
   raw: Schema.String,
+  metadata: Schema.optional(Schema.Record(Schema.String, Schema.Any)),
 }).annotate({ identifier: "ToolStatePending" })
 export type ToolStatePending = Types.DeepMutable<Schema.Schema.Type<typeof ToolStatePending>>
 

@@ -14,6 +14,7 @@ import { NotFoundError } from "@/storage/storage"
 
 import { Effect, Layer, Context } from "effect"
 import { InstanceState } from "@/effect/instance-state"
+import { ClaudeCLI } from "@/provider/claude-cli"
 import { isOverflow as overflow, usable } from "./overflow"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -279,6 +280,8 @@ const layer = Layer.effect(
         .messages({ sessionID: input.sessionID })
         .pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(undefined)))
       if (!msgs) return
+      const lastUser = msgs.findLast((msg) => msg.info.role === "user")
+      if (lastUser?.info.role === "user" && lastUser.info.model.providerID === ClaudeCLI.PROVIDER_ID) return
 
       let total = 0
       let pruned = 0

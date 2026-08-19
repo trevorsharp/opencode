@@ -60,6 +60,11 @@ export const Worktree = {
     waiters.delete(id)
     waiter.resolve(next)
   },
+  clear(scope: ServerScope, directory: string) {
+    const id = key(scope, directory)
+    state.delete(id)
+    waiters.delete(id)
+  },
   wait(scope: ServerScope, directory: string) {
     const id = key(scope, directory)
     const current = state.get(id)

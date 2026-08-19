@@ -15,7 +15,7 @@ import { playSoundById } from "@/utils/sound"
 import { useGlobal } from "./global"
 import { ServerConnection, useServer } from "./server"
 import { type DraftTab, useTabs } from "./tabs"
-import { requireServerKey } from "@/utils/session-route"
+import { legacyRouteDirectory, requireServerKey, withWorkspaceRoot, workspaceRootOf } from "@/utils/session-route"
 import type { ServerScope } from "@/utils/server-scope"
 
 type NotificationBase = {
@@ -154,7 +154,11 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
             platform,
             settings,
             language,
-            navigate,
+            navigate: (href) => {
+              const directory = legacyRouteDirectory(href)
+              if (!directory) return navigate(href)
+              navigate(withWorkspaceRoot(href, directory, workspaceRootOf(ctx.projects.list(), directory)))
+            },
           }),
         }),
         owner ?? undefined,

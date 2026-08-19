@@ -288,6 +288,9 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
             type: "step-start",
           })
         if (part.type === "tool") {
+          // UI-only parts (e.g. injected workflow progress widgets) are display
+          // state, not conversation history — never show them to the model.
+          if (part.state.metadata?.uiOnly === true) continue
           toolNames.add(part.tool)
           if (part.state.status === "completed") {
             const outputText = part.state.time.compacted

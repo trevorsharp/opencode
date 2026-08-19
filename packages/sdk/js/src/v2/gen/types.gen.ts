@@ -220,21 +220,19 @@ export type Session = {
   }
 }
 
-export type OutputFormatText = {
-  type: "text"
-}
-
 export type JsonSchema = {
   [key: string]: unknown
 }
 
-export type OutputFormatJsonSchema = {
-  type: "json_schema"
-  schema: JsonSchema
-  retryCount?: number
-}
-
-export type OutputFormat = OutputFormatText | OutputFormatJsonSchema
+export type OutputFormat =
+  | {
+      type: "text"
+    }
+  | {
+      type: "json_schema"
+      schema: JsonSchema
+      retryCount?: number
+    }
 
 export type UserMessage = {
   id: string
@@ -480,6 +478,9 @@ export type ToolStatePending = {
     [key: string]: unknown
   }
   raw: string
+  metadata?: {
+    [key: string]: unknown
+  }
 }
 
 export type ToolStateRunning = {
@@ -559,6 +560,9 @@ export type StepFinishPart = {
   type: "step-finish"
   reason: string
   snapshot?: string
+  metadata?: {
+    [key: string]: unknown
+  }
   cost: number
   tokens: {
     total?: number
@@ -2150,6 +2154,14 @@ export type ToolList = Array<ToolListItem>
 
 export type ToolIds = Array<string>
 
+export type Worktree = {
+  name: string
+  branch?: string
+  description?: string
+  directory: string
+  root?: string
+}
+
 export type WorktreeError = {
   name:
     | "WorktreeNotGitError"
@@ -2170,16 +2182,24 @@ export type WorktreeCreateInput = {
    * Additional startup script to run after the project's start command
    */
   startCommand?: string
-}
-
-export type Worktree = {
-  name: string
-  branch?: string
-  directory: string
+  /**
+   * Create or attach a workspace member, or create an empty workspace root; omit to create a Git worktree
+   */
+  mode?: "workspace-member" | "workspace-root"
 }
 
 export type WorktreeRemoveInput = {
   directory: string
+  /**
+   * Require the directory to be a managed workspace member
+   */
+  workspaceOnly?: boolean
+}
+
+export type WorktreeRemoveResult = {
+  removed: boolean
+  workspaceRootRemoved: boolean
+  workspaceRootDirectory?: string
 }
 
 export type WorktreeResetInput = {
@@ -2786,16 +2806,6 @@ export type ProviderNotFoundError = {
   providerID: string
   message: string
 }
-
-export type OutputFormat1 =
-  | {
-      type: "text"
-    }
-  | {
-      type: "json_schema"
-      schema: JsonSchema
-      retryCount?: number
-    }
 
 export type SessionStatus2 = {
   id: string
@@ -7703,7 +7713,7 @@ export type WorktreeRemoveResponses = {
   /**
    * Worktree removed
    */
-  200: boolean
+  200: WorktreeRemoveResult
 }
 
 export type WorktreeRemoveResponse = WorktreeRemoveResponses[keyof WorktreeRemoveResponses]
@@ -7731,7 +7741,7 @@ export type WorktreeListResponses = {
   /**
    * List of worktree directories
    */
-  200: Array<string>
+  200: Array<Worktree>
 }
 
 export type WorktreeListResponse = WorktreeListResponses[keyof WorktreeListResponses]
@@ -10475,6 +10485,58 @@ export type PartUpdateResponses = {
 }
 
 export type PartUpdateResponse = PartUpdateResponses[keyof PartUpdateResponses]
+
+export type SessionAgentCardData = {
+  body?: {
+    childSessionID?: string
+    description: string
+    agent?: string
+    model?: string
+    prompt?: string
+    status: "pending" | "running" | "completed" | "error"
+    output?: string
+    error?: string
+    tool?: string
+    metadata?: {
+      [key: string]: unknown
+    }
+    messageID?: string
+    partID?: string
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/agent-card"
+}
+
+export type SessionAgentCardErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionAgentCardError = SessionAgentCardErrors[keyof SessionAgentCardErrors]
+
+export type SessionAgentCardResponses = {
+  /**
+   * Successfully upserted agent card
+   */
+  200: {
+    messageID: string
+    partID: string
+  }
+}
+
+export type SessionAgentCardResponse = SessionAgentCardResponses[keyof SessionAgentCardResponses]
 
 export type SyncStartData = {
   body?: never

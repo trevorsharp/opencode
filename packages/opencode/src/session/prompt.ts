@@ -19,6 +19,7 @@ import { Plugin } from "../plugin"
 import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
+import { McpActivation } from "@/mcp/activation"
 import { LSP } from "@/lsp/lsp"
 import { ulid } from "ulid"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
@@ -56,6 +57,8 @@ import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
 import { LLMEvent } from "@opencode-ai/llm"
+import { ClaudeCLI } from "@/provider/claude-cli"
+import { isRecord } from "@/util/record"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -70,6 +73,55 @@ const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "image/png",
   "image/webp",
 ])
+
+function claudeResumeSessionID(input: {
+  messages: SessionV1.WithParts[]
+  user: SessionV1.User
+  model: Provider.Model
+  structuredOutputRetry: boolean
+}) {
+  if (input.model.api.npm !== ClaudeCLI.EXECUTION || input.structuredOutputRetry) return
+  // Claude owns its own transcript, so a resume is only safe when this turn directly
+  // continues the previous one. Order by wall clock first and fall back to ID, because
+  // the boundary is chronological rather than lexicographic.
+  const ordered = input.messages.toSorted(
+    (left, right) => left.info.time.created - right.info.time.created || left.info.id.localeCompare(right.info.id),
+  )
+  const index = ordered.findIndex((message) => message.info.id === input.user.id)
+  const user = ordered[index]
+  if (!user) return
+  // An all-synthetic message is continuation state rather than something the user
+  // said, and normally cannot resume a conversation. A workflow completion is the
+  // exception: the run the model itself started reports back this way, and refusing
+  // it would leave the model unable to read its own result. The marker is a
+  // designation rather than proof — any client that can prompt this session can
+  // already drive it — so every other boundary check below still has to hold.
+  if (
+    user.parts.every((part) => "synthetic" in part && part.synthetic) &&
+    !user.parts.some((part) => part.type === "text" && isRecord(part.metadata?.["workflow"]))
+  )
+    return
+  // Anything chronologically between the previous turn and this one means the resumed
+  // transcript is no longer the transcript Claude would continue from.
+  const assistant = ordered[index - 1]
+  if (
+    !assistant ||
+    assistant.info.role !== "assistant" ||
+    !assistant.info.finish ||
+    !assistant.info.time.completed ||
+    assistant.info.error
+  )
+    return
+  const answered = ordered[index - 2]
+  if (!answered || answered.info.role !== "user" || assistant.info.parentID !== answered.info.id) return
+  const step = assistant.parts.findLast((part) => part.type === "step-finish")
+  if (!step || !isRecord(step.metadata)) return
+  const metadata = step.metadata[ClaudeCLI.EXECUTION]
+  if (!isRecord(metadata)) return
+  if (metadata.providerID !== input.model.providerID || metadata.modelID !== input.model.id) return
+  if (metadata.messageID !== assistant.info.id || typeof metadata.claudeSessionID !== "string") return
+  return metadata.claudeSessionID
+}
 
 const STRUCTURED_OUTPUT_DESCRIPTION = `Use this tool to return your final response in the requested structured format.
 
@@ -702,6 +754,8 @@ const layer = Layer.effect(
         if (part.type === "file") {
           if (part.source?.type === "resource") {
             const { clientName, uri } = part.source
+            const active = McpActivation.active(yield* McpActivation.root(sessions, input.sessionID))
+            if (!active.has(clientName)) throw new Error(`MCP server is not active for this session: ${clientName}`)
             yield* Effect.logInfo("mcp resource", { clientName, uri, mime: part.mime })
             const pieces: Draft<SessionV1.Part>[] = [
               {
@@ -1082,6 +1136,7 @@ const layer = Layer.effect(
       function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
         let structured: unknown
+        let structuredOutputRetries = 0
         let step = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
@@ -1091,6 +1146,18 @@ const layer = Layer.effect(
 
           let msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
             Effect.provideService(Database.Service, database),
+          )
+
+          // Messages made up entirely of UI-only parts (injected workflow
+          // progress widgets) are display state — they must not steer loop
+          // control (their unfinished tool parts read as pending work and
+          // trigger assistant-prefill continuations) or reach the model.
+          msgs = msgs.filter(
+            (msg) =>
+              !(
+                msg.parts.length > 0 &&
+                msg.parts.every((part) => part.type === "tool" && part.state.metadata?.uiOnly === true)
+              ),
           )
 
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
@@ -1223,7 +1290,9 @@ const layer = Layer.effect(
             const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
             const promptOps = yield* ops()
 
-            const tools = yield* SessionTools.resolve({
+            // Resolvable again mid-turn: an external runtime whose agent activates
+            // an MCP server rebuilds its tool facade from exactly this resolution.
+            const resolveTools = SessionTools.resolve({
               agent,
               session,
               model,
@@ -1236,18 +1305,29 @@ const layer = Layer.effect(
               Effect.provideService(Permission.Service, permission),
               Effect.provideService(ToolRegistry.Service, registry),
               Effect.provideService(MCP.Service, mcp),
+              Effect.provideService(Session.Service, sessions),
               Effect.provideService(Truncate.Service, truncate),
               Effect.provideService(RuntimeFlags.Service, flags),
             )
-
-            if (lastUser.format?.type === "json_schema") {
-              tools["StructuredOutput"] = createStructuredOutputTool({
-                schema: lastUser.format.schema,
-                onSuccess(output) {
-                  structured = output
-                },
-              })
-            }
+            const resolveMcpInstructions = Effect.gen(function* () {
+              const active = McpActivation.active(yield* McpActivation.root(sessions, sessionID))
+              return yield* sys.mcp(agent, session.permission, active)
+            })
+            // Part of every resolution, not only the first one: a re-resolved tool
+            // map is the map the turn dispatches against.
+            const structuredFormat = lastUser.format?.type === "json_schema" ? lastUser.format : undefined
+            const resolveTurnTools = Effect.gen(function* () {
+              const resolved = yield* resolveTools
+              if (structuredFormat)
+                resolved["StructuredOutput"] = createStructuredOutputTool({
+                  schema: structuredFormat.schema,
+                  onSuccess(output) {
+                    structured = output
+                  },
+                })
+              return resolved
+            })
+            const tools = yield* resolveTurnTools
 
             if (step === 1)
               yield* summary.summarize({ sessionID, messageID: lastUser.id }).pipe(Effect.ignore, Effect.forkIn(scope))
@@ -1258,7 +1338,7 @@ const layer = Layer.effect(
               sys.skills(agent),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
-              sys.mcp(agent, session.permission),
+              resolveMcpInstructions,
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
             const system = [
@@ -1269,6 +1349,16 @@ const layer = Layer.effect(
             ]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
+            const promptStart =
+              structuredOutputRetries > 0
+                ? msgs.findLastIndex(
+                    (message) =>
+                      message.info.role === "user" &&
+                      message.parts.some((part) => part.type !== "text" || part.synthetic !== true),
+                  )
+                : -1
+            const promptMessages =
+              promptStart === -1 ? undefined : yield* MessageV2.toModelMessagesEffect(msgs.slice(promptStart), model)
             const result = yield* handle.process({
               user: lastUser,
               agent,
@@ -1280,8 +1370,19 @@ const layer = Layer.effect(
                 ...modelMsgs,
                 ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
               ],
+              promptMessages,
               tools,
+              mcpInstructions,
+              refresh: Effect.gen(function* () {
+                return { tools: yield* resolveTurnTools, mcpInstructions: yield* resolveMcpInstructions }
+              }),
               model,
+              resumeSessionID: claudeResumeSessionID({
+                messages: msgs,
+                user: lastUser,
+                model,
+                structuredOutputRetry: structuredOutputRetries > 0,
+              }),
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
 
@@ -1307,9 +1408,28 @@ const layer = Layer.effect(
                 return "break" as const
               }
               if (format.type === "json_schema") {
+                if (structuredOutputRetries < (format.retryCount ?? 2)) {
+                  structuredOutputRetries++
+                  const retryUser: SessionV1.User = {
+                    ...lastUser,
+                    id: MessageID.ascending(),
+                    time: { created: Date.now() },
+                    format: new SessionV1.OutputFormatJsonSchema(format),
+                  }
+                  yield* sessions.updateMessage(retryUser)
+                  yield* sessions.updatePart({
+                    id: PartID.ascending(),
+                    messageID: retryUser.id,
+                    sessionID,
+                    type: "text",
+                    text: "The previous response did not use the StructuredOutput tool. Retry now and call StructuredOutput with output that matches the requested schema.",
+                    synthetic: true,
+                  } satisfies SessionV1.TextPart)
+                  return "continue" as const
+                }
                 handle.message.error = new SessionV1.StructuredOutputError({
                   message: "Model did not produce structured output",
-                  retries: 0,
+                  retries: structuredOutputRetries,
                 }).toObject()
                 yield* sessions.updateMessage(handle.message)
                 return "break" as const

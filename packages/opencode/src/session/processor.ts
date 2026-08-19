@@ -12,6 +12,7 @@ import { Snapshot } from "@/snapshot"
 import { Session } from "./session"
 import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
+import { ClaudeCLI } from "@/provider/claude-cli"
 import { isOverflow } from "./overflow"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
@@ -435,6 +436,19 @@ const layer = Layer.effect(
           case "step-finish": {
             const completedSnapshot = yield* snapshot.track()
             yield* Effect.forEach(Object.keys(ctx.reasoningMap), finishReasoning)
+            const claude = value.providerMetadata?.[ClaudeCLI.EXECUTION]
+            const metadata =
+              isRecord(claude) && typeof claude.claudeSessionID === "string"
+                ? {
+                    ...value.providerMetadata,
+                    [ClaudeCLI.EXECUTION]: {
+                      claudeSessionID: claude.claudeSessionID,
+                      providerID: ctx.model.providerID,
+                      modelID: ctx.model.id,
+                      messageID: ctx.assistantMessage.id,
+                    },
+                  }
+                : value.providerMetadata
             const usage = Session.getUsage({
               model: ctx.model,
               usage: value.usage ?? new Usage({}),
@@ -450,6 +464,7 @@ const layer = Layer.effect(
               messageID: ctx.assistantMessage.id,
               sessionID: ctx.assistantMessage.sessionID,
               type: "step-finish",
+              metadata,
               tokens: usage.tokens,
               cost: usage.cost,
             })
@@ -605,7 +620,10 @@ const layer = Layer.effect(
         })
         const error = parse(e)
         if (SessionV1.ContextOverflowError.isInstance(error)) {
-          if ((yield* config.get()).compaction?.auto === false && !ctx.assistantMessage.summary) {
+          if (
+            ctx.model.providerID === ClaudeCLI.PROVIDER_ID ||
+            ((yield* config.get()).compaction?.auto === false && !ctx.assistantMessage.summary)
+          ) {
             ctx.assistantMessage.error = error
             ctx.assistantMessage.finish = "error"
             yield* events.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })

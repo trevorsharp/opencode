@@ -26,7 +26,7 @@ import { McpOAuthCallback } from "./oauth-callback"
 import { McpAuth } from "./auth"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { TuiEvent } from "@/server/tui-event"
-import { Cause, Effect, Exit, Layer, Context, Schema, Stream } from "effect"
+import { Cause, Effect, Exit, Layer, Context, Schema, Semaphore, Stream } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
@@ -145,6 +145,9 @@ interface State {
   clients: Record<string, MCPClient>
   defs: Record<string, MCPToolDef[]>
   instructions: Record<string, string>
+  /** One connection transition at a time per server, so concurrent activation
+   * cannot start duplicate clients for the same name. */
+  transitions: Map<string, Semaphore.Semaphore>
 }
 
 export interface ServerInstructions {
@@ -165,14 +168,25 @@ export interface Interface {
   readonly status: () => Effect.Effect<Record<string, Status>>
   readonly clients: () => Effect.Effect<Record<string, MCPClient>>
   readonly instructions: () => Effect.Effect<ServerInstructions[]>
-  readonly tools: () => Effect.Effect<Record<string, McpTool>>
+  /** Every connected server's tools, or only those of the named servers. */
+  readonly tools: (servers?: ReadonlySet<string>) => Effect.Effect<Record<string, McpTool>>
   readonly prompts: () => Effect.Effect<Record<string, PromptInfo & { client: string }>>
-  readonly resources: (clientName?: string) => Effect.Effect<Record<string, ResourceInfo & { client: string }>>
+  /** Only the named servers are queried when `servers` is given. */
+  readonly resources: (
+    clientName?: string,
+    servers?: ReadonlySet<string>,
+  ) => Effect.Effect<Record<string, ResourceInfo & { client: string }>>
   readonly resourceTemplates: (
     clientName?: string,
+    servers?: ReadonlySet<string>,
   ) => Effect.Effect<Record<string, ResourceTemplateInfo & { client: string }>>
   readonly add: (name: string, mcp: ConfigMCPV1.Info) => Effect.Effect<{ status: Record<string, Status> | Status }>
-  readonly connect: (name: string) => Effect.Effect<void, NotFoundError>
+  /**
+   * Connects a server. With `ifNeeded` the connection is skipped when a live
+   * client already exists, decided inside the server's own serialized transition,
+   * so concurrent activation of one name starts one client.
+   */
+  readonly connect: (name: string, options?: { ifNeeded?: boolean }) => Effect.Effect<void, NotFoundError>
   readonly disconnect: (name: string) => Effect.Effect<void, NotFoundError>
   readonly getPrompt: (
     clientName: string,
@@ -500,6 +514,7 @@ const layer = Layer.effect(
           clients: {},
           defs: {},
           instructions: {},
+          transitions: new Map(),
         }
 
         yield* Effect.forEach(
@@ -624,18 +639,30 @@ const layer = Layer.effect(
         }))
     })
 
-    const createAndStore = Effect.fn("MCP.createAndStore")(function* (name: string, mcp: ConfigMCPV1.Info) {
+    const transition = Effect.fnUntraced(function* <A, E, R>(name: string, fx: Effect.Effect<A, E, R>) {
+      const s = yield* InstanceState.get(state)
+      const existing = s.transitions.get(name) ?? Semaphore.makeUnsafe(1)
+      s.transitions.set(name, existing)
+      return yield* existing.withPermits(1)(fx)
+    })
+
+    /** The body of a connection transition; the caller holds the server's permit. */
+    const createAndStoreLocked = Effect.fnUntraced(function* (name: string, mcp: ConfigMCPV1.Info) {
       const s = yield* InstanceState.get(state)
       const result = yield* create(name, mcp)
 
       s.status[name] = result.status
-      if (!result.mcpClient) {
-        yield* closeClient(s, name)
-        delete s.clients[name]
-        return result.status
-      }
+      const stored = result.mcpClient
+        ? yield* storeClient(s, name, result.mcpClient, result.defs!, result.instructions, mcp.timeout)
+        : yield* closeClient(s, name).pipe(Effect.as(result.status))
+      // Agent-driven and UI-driven transitions reach the MCP status UI through
+      // the same event the catalog already publishes.
+      yield* events.publish(ToolsChanged, { server: name }).pipe(Effect.ignore)
+      return stored
+    })
 
-      return yield* storeClient(s, name, result.mcpClient, result.defs!, result.instructions, mcp.timeout)
+    const createAndStore = Effect.fn("MCP.createAndStore")(function* (name: string, mcp: ConfigMCPV1.Info) {
+      return yield* transition(name, createAndStoreLocked(name, mcp))
     })
 
     const add = Effect.fn("MCP.add")(function* (name: string, mcp: ConfigMCPV1.Info) {
@@ -645,17 +672,31 @@ const layer = Layer.effect(
       return { status: s.status }
     })
 
-    const connect = Effect.fn("MCP.connect")(function* (name: string) {
+    const connect = Effect.fn("MCP.connect")(function* (name: string, options?: { ifNeeded?: boolean }) {
       const mcp = yield* requireMcpConfig(name)
-      yield* createAndStore(name, { ...mcp, enabled: true })
+      yield* transition(
+        name,
+        Effect.gen(function* () {
+          const s = yield* InstanceState.get(state)
+          // Checked while holding the permit: a name two callers activate at once
+          // connects once, and the second caller never replaces a live client.
+          if (options?.ifNeeded && s.status[name]?.status === "connected" && s.clients[name]) return
+          yield* createAndStoreLocked(name, { ...mcp, enabled: true })
+        }),
+      )
     })
 
     const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
       yield* requireMcpConfig(name)
-      const s = yield* InstanceState.get(state)
-      yield* closeClient(s, name)
-      delete s.clients[name]
-      s.status[name] = { status: "disabled" }
+      yield* transition(
+        name,
+        Effect.gen(function* () {
+          const s = yield* InstanceState.get(state)
+          yield* closeClient(s, name)
+          s.status[name] = { status: "disabled" }
+          yield* events.publish(ToolsChanged, { server: name }).pipe(Effect.ignore)
+        }),
+      )
     })
 
     function requestTimeout(s: State, name: string, configured: McpEntry | undefined, fallback?: number) {
@@ -663,8 +704,13 @@ const layer = Layer.effect(
       return s.config[name]?.timeout ?? staticTimeout ?? fallback
     }
 
-    const tools = Effect.fn("MCP.tools")(function* () {
+    const tools = Effect.fn("MCP.tools")(function* (servers?: ReadonlySet<string>) {
       const result: Record<string, McpTool> = {}
+      // Public names sanitize server and tool names, which can collapse distinct
+      // pairs onto one name. A name more than one tool claims names no particular
+      // tool, so it is dropped rather than silently resolving to whichever server
+      // was listed last.
+      const ambiguous = new Set<string>()
       const s = yield* InstanceState.get(state)
 
       const cfg = yield* cfgSvc.get()
@@ -673,6 +719,7 @@ const layer = Layer.effect(
 
       for (const [clientName, client] of Object.entries(s.clients)) {
         if (s.status[clientName]?.status !== "connected") continue
+        if (servers && !servers.has(clientName)) continue
         const mcpConfig = config[clientName]
         const listed = s.defs[clientName]
         if (!listed) {
@@ -681,8 +728,14 @@ const layer = Layer.effect(
         }
         const timeout = requestTimeout(s, clientName, mcpConfig, defaultTimeout)
         for (const def of listed) {
-          result[McpCatalog.toolName(clientName, def.name)] = { def, client, timeout }
+          const name = McpCatalog.toolName(clientName, def.name)
+          if (name in result) ambiguous.add(name)
+          result[name] = { def, client, timeout }
         }
+      }
+      for (const name of ambiguous) {
+        yield* Effect.logWarning("mcp tool name is claimed by more than one tool", { name })
+        delete result[name]
       }
       return result
     })
@@ -693,12 +746,16 @@ const layer = Layer.effect(
       label: string,
       key?: (item: T) => string,
       targetClientName?: string,
+      servers?: ReadonlySet<string>,
     ) {
       return Effect.gen(function* () {
         const cfg = yield* cfgSvc.get()
         return yield* Effect.forEach(
           Object.entries(s.clients).filter(
-            ([name]) => s.status[name]?.status === "connected" && (!targetClientName || name === targetClientName),
+            ([name]) =>
+              s.status[name]?.status === "connected" &&
+              (!targetClientName || name === targetClientName) &&
+              (!servers || servers.has(name)),
           ),
           ([clientName, client]) =>
             McpCatalog.fetch(
@@ -717,23 +774,28 @@ const layer = Layer.effect(
       return yield* collectFromConnected(yield* InstanceState.get(state), McpCatalog.prompts, "prompts")
     })
 
-    const resources = Effect.fn("MCP.resources")(function* (clientName?: string) {
+    const resources = Effect.fn("MCP.resources")(function* (clientName?: string, servers?: ReadonlySet<string>) {
       return yield* collectFromConnected(
         yield* InstanceState.get(state),
         McpCatalog.resources,
         "resources",
         (resource) => resource.uri,
         clientName,
+        servers,
       )
     })
 
-    const resourceTemplates = Effect.fn("MCP.resourceTemplates")(function* (clientName?: string) {
+    const resourceTemplates = Effect.fn("MCP.resourceTemplates")(function* (
+      clientName?: string,
+      servers?: ReadonlySet<string>,
+    ) {
       return yield* collectFromConnected(
         yield* InstanceState.get(state),
         McpCatalog.resourceTemplates,
         "resource templates",
         (template) => template.uriTemplate,
         clientName,
+        servers,
       )
     })
 
@@ -803,7 +865,15 @@ const layer = Layer.effect(
       return mcpConfig
     })
 
-    const startAuth = Effect.fn("MCP.startAuth")(function* (mcpName: string) {
+    /**
+     * Begins an OAuth flow; the caller holds the server's permit.
+     *
+     * The probe connects a client and claims this server's pending OAuth transport
+     * and state, so it belongs to the same serialized transition a connection takes:
+     * otherwise a concurrent activation could start a second client for the name or
+     * leave a pending transport that belongs to neither flow.
+     */
+    const startAuthLocked = Effect.fnUntraced(function* (mcpName: string) {
       const mcpConfig = yield* requireMcpConfig(mcpName)
       if (mcpConfig.type !== "remote") throw new Error(`MCP server ${mcpName} is not a remote server`)
       if (mcpConfig.oauth === false) throw new Error(`MCP server ${mcpName} has OAuth explicitly disabled`)
@@ -869,31 +939,59 @@ const layer = Layer.effect(
       )
     })
 
+    const startAuth = Effect.fn("MCP.startAuth")(function* (mcpName: string) {
+      return yield* transition(mcpName, startAuthLocked(mcpName))
+    })
+
+    /**
+     * Stores the client a flow that needed no browser step already connected; the
+     * caller holds the server's permit. Stored tokens still connect a server, so
+     * this publishes the same catalog event as the rest.
+     */
+    const storeAuthenticatedLocked = Effect.fnUntraced(function* (mcpName: string, client: MCPClient | undefined) {
+      const mcpConfig = yield* requireMcpConfig(mcpName).pipe(
+        Effect.tapError(() => Effect.tryPromise(() => client?.close() ?? Promise.resolve()).pipe(Effect.ignore)),
+      )
+      const s = yield* InstanceState.get(state)
+
+      const listed = client
+        ? client.getServerCapabilities()?.tools
+          ? yield* McpCatalog.defs(client, mcpConfig.timeout)
+          : []
+        : undefined
+      if (!client || !listed) {
+        yield* Effect.tryPromise(() => client?.close() ?? Promise.resolve()).pipe(Effect.ignore)
+        yield* closeClient(s, mcpName)
+        const failed = { status: "failed", error: "Failed to get tools" } satisfies Status
+        s.status[mcpName] = failed
+        yield* events.publish(ToolsChanged, { server: mcpName }).pipe(Effect.ignore)
+        return failed
+      }
+
+      yield* auth.clearOAuthState(mcpName)
+      const stored = yield* storeClient(s, mcpName, client, listed, client.getInstructions()?.trim(), mcpConfig.timeout)
+      yield* events.publish(ToolsChanged, { server: mcpName }).pipe(Effect.ignore)
+      return stored
+    })
+
     const authenticate = Effect.fn("MCP.authenticate")(function* (
       mcpName: string,
       onAuthorization?: (authorizationUrl: string) => void,
     ) {
-      const result = yield* startAuth(mcpName)
-      if (!result.authorizationUrl) {
-        const client = "client" in result ? result.client : undefined
-        const mcpConfig = yield* requireMcpConfig(mcpName).pipe(
-          Effect.tapError(() => Effect.tryPromise(() => client?.close() ?? Promise.resolve()).pipe(Effect.ignore)),
-        )
-
-        const listed = client
-          ? client.getServerCapabilities()?.tools
-            ? yield* McpCatalog.defs(client, mcpConfig.timeout)
-            : []
-          : undefined
-        if (!client || !listed) {
-          yield* Effect.tryPromise(() => client?.close() ?? Promise.resolve()).pipe(Effect.ignore)
-          return { status: "failed", error: "Failed to get tools" } satisfies Status
-        }
-
-        const s = yield* InstanceState.get(state)
-        yield* auth.clearOAuthState(mcpName)
-        return yield* storeClient(s, mcpName, client, listed, client.getInstructions()?.trim(), mcpConfig.timeout)
-      }
+      // The probe and the client it produces are one connection transition, so a
+      // concurrent activation of the same name waits rather than racing it. The
+      // permit is released before the browser step: no other caller may be held
+      // behind a person deciding whether to authorize.
+      const started = yield* transition(
+        mcpName,
+        Effect.gen(function* () {
+          const result: AuthResult = yield* startAuthLocked(mcpName)
+          if (result.authorizationUrl) return { pending: result, status: undefined }
+          return { pending: undefined, status: yield* storeAuthenticatedLocked(mcpName, result.client) }
+        }),
+      )
+      if (!started.pending) return started.status
+      const result = started.pending
 
       const callbackPromise = McpOAuthCallback.waitForCallback(result.oauthState, mcpName)
       onAuthorization?.(result.authorizationUrl)
@@ -915,8 +1013,8 @@ const layer = Layer.effect(
       return yield* finishAuth(mcpName, code)
     })
 
-    const finishAuth = Effect.fn("MCP.finishAuth")(function* (mcpName: string, authorizationCode: string) {
-      yield* requireMcpConfig(mcpName)
+    /** Completes an OAuth flow; the caller holds the server's permit. */
+    const finishAuthLocked = Effect.fnUntraced(function* (mcpName: string, authorizationCode: string) {
       const pending = pendingOAuthTransports.get(mcpName)
       if (!pending) throw new Error(`No pending OAuth flow for MCP server: ${mcpName}`)
 
@@ -930,7 +1028,13 @@ const layer = Layer.effect(
         }),
       )
 
-      if (error) return { status: "failed", error: `OAuth completion failed: ${error}` } satisfies Status
+      if (error) {
+        const failed = { status: "failed", error: `OAuth completion failed: ${error}` } satisfies Status
+        const s = yield* InstanceState.get(state)
+        s.status[mcpName] = failed
+        yield* events.publish(ToolsChanged, { server: mcpName }).pipe(Effect.ignore)
+        return failed
+      }
 
       yield* Effect.promise(() => pending.provider?.commit() ?? Promise.resolve())
       yield* auth.clearCodeVerifier(mcpName)
@@ -938,7 +1042,14 @@ const layer = Layer.effect(
 
       const mcpConfig = yield* requireMcpConfig(mcpName)
 
-      return yield* createAndStore(mcpName, { ...mcpConfig, enabled: true })
+      return yield* createAndStoreLocked(mcpName, { ...mcpConfig, enabled: true })
+    })
+
+    const finishAuth = Effect.fn("MCP.finishAuth")(function* (mcpName: string, authorizationCode: string) {
+      yield* requireMcpConfig(mcpName)
+      // Consuming the pending transport and storing the client it produces is the
+      // rest of the same connection transition the flow started under.
+      return yield* transition(mcpName, finishAuthLocked(mcpName, authorizationCode))
     })
 
     const removeAuth = Effect.fn("MCP.removeAuth")(function* (mcpName: string) {

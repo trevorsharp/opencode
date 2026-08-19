@@ -23,6 +23,7 @@ import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder, HttpApiError, HttpApiSchema } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
 import {
+  AgentCardPayload,
   CommandPayload,
   DiffQuery,
   ForkPayload,
@@ -410,6 +411,130 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return yield* session.updatePart(payload)
     })
 
+    const agentCard = Effect.fn("SessionHttpApi.agentCard")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof AgentCardPayload.Type
+    }) {
+      const { sessionID } = ctx.params
+      const payload = ctx.payload
+      yield* requireSession(sessionID)
+      const child = payload.childSessionID ? yield* requireSession(payload.childSessionID) : undefined
+      const now = Date.now()
+      const agent = payload.agent ?? "workflow"
+      const input = {
+        prompt: payload.prompt ?? payload.description,
+        description: payload.description,
+        subagent_type: agent,
+      }
+      const modelLabel =
+        payload.model ??
+        (child?.model ? `${child.model.id}${child.model.variant ? ` (${child.model.variant})` : ""}` : undefined)
+      const state = (
+        start: number,
+        previousMetadata?: SessionV1.ToolPart["state"]["metadata"],
+      ): SessionV1.ToolPart["state"] => {
+        const metadata = {
+          ...previousMetadata,
+          ...(payload.metadata ?? {}),
+          ...(payload.childSessionID ? { sessionId: payload.childSessionID } : {}),
+          parentSessionId: sessionID,
+          ...(modelLabel ? { model: modelLabel } : {}),
+          uiOnly: true,
+        }
+        switch (payload.status) {
+          case "pending":
+            return { status: "pending", input, raw: "", metadata }
+          case "running":
+            return { status: "running", input, metadata, time: { start } }
+          case "completed":
+            return {
+              status: "completed",
+              input,
+              metadata,
+              title: payload.description,
+              output: payload.output ?? "",
+              time: { start, end: now },
+            }
+          case "error":
+            return {
+              status: "error",
+              input,
+              metadata,
+              error: payload.error ?? "Unknown error",
+              time: { start, end: now },
+            }
+        }
+      }
+      const finalizeMessage = (info: SessionV1.Assistant) =>
+        session.updateMessage({
+          ...info,
+          finish: payload.status === "error" ? "error" : "tool-calls",
+          time: { ...info.time, completed: now },
+        })
+
+      if (!!payload.messageID !== !!payload.partID) return yield* new HttpApiError.BadRequest({})
+      if (payload.messageID && payload.partID) {
+        const existing = yield* session.getPart({
+          sessionID,
+          messageID: payload.messageID,
+          partID: payload.partID,
+        })
+        if (
+          !existing ||
+          existing.type !== "tool" ||
+          existing.state.metadata?.uiOnly !== true ||
+          existing.state.metadata.parentSessionId !== sessionID
+        )
+          return yield* new HttpApiError.BadRequest({})
+        const start = existing.state.status === "pending" ? now : existing.state.time.start
+        yield* session.updatePart({ ...existing, state: state(start, existing.state.metadata) })
+        if (payload.status === "completed" || payload.status === "error") {
+          const message = yield* SessionError.mapStorageNotFound(
+            session.findMessage(sessionID, (msg) => msg.info.id === payload.messageID),
+          )
+          if (Option.isSome(message) && message.value.info.role === "assistant") {
+            yield* finalizeMessage(message.value.info)
+          }
+        }
+        yield* session.touch(sessionID)
+        return { messageID: payload.messageID, partID: payload.partID }
+      }
+
+      const lastUser = yield* SessionError.mapStorageNotFound(
+        session.findMessage(sessionID, (msg) => msg.info.role === "user"),
+      )
+      if (Option.isNone(lastUser)) return yield* new HttpApiError.BadRequest({})
+      const userInfo = lastUser.value.info as SessionV1.User
+      const instanceCtx = yield* InstanceState.context
+      const message = yield* session.updateMessage({
+        id: MessageID.ascending(),
+        role: "assistant" as const,
+        parentID: userInfo.id,
+        sessionID,
+        mode: agent,
+        agent,
+        variant: userInfo.model.variant,
+        path: { cwd: instanceCtx.directory, root: instanceCtx.worktree },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: child?.model?.id ?? userInfo.model.modelID,
+        providerID: child?.model?.providerID ?? userInfo.model.providerID,
+        time: { created: now },
+      })
+      const part = yield* session.updatePart({
+        id: PartID.ascending(),
+        messageID: message.id,
+        sessionID,
+        type: "tool" as const,
+        callID: message.id,
+        tool: payload.tool ?? "task",
+        state: state(now),
+      })
+      if (payload.status === "completed" || payload.status === "error") yield* finalizeMessage(message)
+      yield* session.touch(sessionID)
+      return { messageID: message.id, partID: part.id }
+    })
+
     return handlers
       .handle("list", list)
       .handle("status", status)
@@ -438,5 +563,6 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("deleteMessage", deleteMessage)
       .handle("deletePart", deletePart)
       .handle("updatePart", updatePart)
+      .handle("agentCard", agentCard)
   }),
 )

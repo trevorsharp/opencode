@@ -13,7 +13,7 @@ import {
 } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { Dynamic } from "solid-js/web"
-import { useNavigate } from "@solidjs/router"
+import { useLocation, useNavigate } from "@solidjs/router"
 import { useMutation } from "@tanstack/solid-query"
 import { createVirtualizer, defaultRangeExtractor, elementScroll, type VirtualItem } from "@tanstack/solid-virtual"
 import { Accordion } from "@opencode-ai/ui/accordion"
@@ -67,7 +67,14 @@ import { useServerSDK } from "@/context/server-sdk"
 import { usePlatform } from "@/context/platform"
 import { useSettings } from "@/context/settings"
 import { useTabs } from "@/context/tabs"
-import { legacySessionHref, requireServerKey, sessionHref } from "@/utils/session-route"
+import {
+  cancelPendingProjectNavigation,
+  legacyNewSessionHref,
+  legacySessionHref,
+  requireServerKey,
+  sessionHref,
+  workspaceRootParam,
+} from "@/utils/session-route"
 import { useSDK } from "@/context/sdk"
 import { useSync } from "@/context/sync"
 import { notifySessionTabsRemoved } from "@/components/titlebar-session-events"
@@ -258,6 +265,7 @@ export function MessageTimeline(props: {
 }) {
   let touchGesture: number | undefined
 
+  const location = useLocation()
   const navigate = useNavigate()
   const serverSDK = useServerSDK()
   const sdk = useSDK()
@@ -793,7 +801,9 @@ export function MessageTimeline(props: {
   const navigateAfterSessionRemoval = (sessionID: string, parentID?: string, nextSessionID?: string) => {
     if (params.id !== sessionID) return
     const href = (id: string) =>
-      params.serverKey ? sessionHref(requireServerKey(params.serverKey), id) : legacySessionHref(sdk().directory, id)
+      params.serverKey
+        ? sessionHref(requireServerKey(params.serverKey), id)
+        : legacySessionHref(sdk().directory, id, workspaceRootParam(location.search))
     if (parentID) {
       navigate(href(parentID))
       return
@@ -806,7 +816,8 @@ export function MessageTimeline(props: {
       tabs.newDraft({ server: requireServerKey(params.serverKey), directory: sdk().directory })
       return
     }
-    navigate(`/${params.dir}/session`)
+    cancelPendingProjectNavigation()
+    navigate(legacyNewSessionHref(sdk().directory, workspaceRootParam(location.search)))
   }
 
   const exportSession = async (sessionID: string) => {
@@ -930,7 +941,9 @@ export function MessageTimeline(props: {
     const id = parentID()
     if (!id) return
     navigate(
-      params.serverKey ? sessionHref(requireServerKey(params.serverKey), id) : legacySessionHref(sdk().directory, id),
+      params.serverKey
+        ? sessionHref(requireServerKey(params.serverKey), id)
+        : legacySessionHref(sdk().directory, id, workspaceRootParam(location.search)),
     )
   }
 
@@ -1593,14 +1606,9 @@ export function MessageTimeline(props: {
                                 <DropdownMenu.Item onSelect={() => exportSession(id)}>
                                   <DropdownMenu.ItemLabel>{language.t("common.export")}</DropdownMenu.ItemLabel>
                                 </DropdownMenu.Item>
+                                <DropdownMenu.Separator />
                                 <DropdownMenu.Item onSelect={() => void archiveSession(id)}>
                                   <DropdownMenu.ItemLabel>{language.t("common.archive")}</DropdownMenu.ItemLabel>
-                                </DropdownMenu.Item>
-                                <DropdownMenu.Separator />
-                                <DropdownMenu.Item
-                                  onSelect={() => dialog.show(() => <DialogDeleteSession sessionID={id} />)}
-                                >
-                                  <DropdownMenu.ItemLabel>{language.t("common.delete")}</DropdownMenu.ItemLabel>
                                 </DropdownMenu.Item>
                               </DropdownMenu.Content>
                             </DropdownMenu.Portal>
@@ -1667,12 +1675,9 @@ export function MessageTimeline(props: {
                               <MenuV2.Item onSelect={() => exportSession(id)}>
                                 {language.t("common.export")}...
                               </MenuV2.Item>
+                              <MenuV2.Separator />
                               <MenuV2.Item onSelect={() => void archiveSession(id)}>
                                 {language.t("common.archive")}
-                              </MenuV2.Item>
-                              <MenuV2.Separator />
-                              <MenuV2.Item onSelect={() => dialog.show(() => <DialogDeleteSession sessionID={id} />)}>
-                                {language.t("common.delete")}...
                               </MenuV2.Item>
                             </MenuV2.Content>
                           </MenuV2.Portal>

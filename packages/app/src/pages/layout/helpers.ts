@@ -1,6 +1,7 @@
 import { getFilename } from "@opencode-ai/core/util/path"
 import { type Session } from "@opencode-ai/sdk/v2/client"
 import { pathKey } from "@/utils/path-key"
+import { isWorkspaceContainer, owningContainer } from "@/utils/project-owner"
 import type { ServerConnection } from "@/context/server"
 import type { HomeProjectSelection } from "@/context/layout"
 
@@ -98,13 +99,13 @@ export function projectForSession<T extends { id?: string; worktree: string; san
   projects: T[],
   byID: Map<string, T> = new Map(projects.flatMap((project) => (project.id ? [[project.id, project] as const] : []))),
 ) {
+  // A member shares its source checkout's git project ID, so the workspace container that claims the
+  // session's own directory owns it before the shared ID picks the source.
+  const owner = owningContainer(projects, session.directory)
+  if (isWorkspaceContainer(owner)) return owner
   const direct = byID.get(session.projectID)
   if (direct) return direct
-  const directory = pathKey(session.directory)
-  return projects.find(
-    (project) =>
-      pathKey(project.worktree) === directory || project.sandboxes?.some((sandbox) => pathKey(sandbox) === directory),
-  )
+  return owner
 }
 
 export const errorMessage = (err: unknown, fallback: string) => {
@@ -139,4 +140,46 @@ export const effectiveWorkspaceOrder = (local: string, dirs: string[], persisted
   }
 
   return [...result, ...live.values()]
+}
+
+const VSCODE_URL_SCHEMES = ["http:", "https:", "vscode:"]
+
+const splitFirst = (value: string, separator: string) => {
+  const index = value.indexOf(separator)
+  if (index === -1) return [value, ""] as const
+  return [value.slice(0, index), value.slice(index + separator.length)] as const
+}
+
+export function openInVSCodeBase(value: string | undefined) {
+  if (!value) return
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return
+  }
+  if (!VSCODE_URL_SCHEMES.includes(url.protocol)) return
+  return url
+}
+
+export function openInVSCodeURL(base: string | undefined, directory: string) {
+  if (!base || !directory) return
+  const url = openInVSCodeBase(base)
+  if (!url) return
+
+  if (url.protocol !== "vscode:") {
+    url.searchParams.set("folder", directory)
+    return url.toString()
+  }
+
+  const [withoutFragment, fragment] = splitFirst(base, "#")
+  const [path, search] = splitFirst(withoutFragment, "?")
+  const params = new URLSearchParams(search)
+  params.set("windowId", "_blank")
+  const encoded = directory
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/")
+  const joined = `${path.replace(/\/+$/, "")}/${encoded.replace(/^\/+/, "")}`
+  return `${joined}?${params.toString()}${fragment ? `#${fragment}` : ""}`
 }

@@ -1,3 +1,4 @@
+import path from "node:path"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { and, eq, sql } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
@@ -210,10 +211,27 @@ const layer = Layer.effect(
         )
     })
 
+    const workspaceRoot = Effect.fnUntraced(function* (directory: string) {
+      const root = FSUtil.resolve(directory)
+      const name = yield* fs
+        .readFileString(path.join(root, ".workspace"))
+        .pipe(Effect.catch(() => Effect.succeed(undefined)))
+      if (name === undefined) return undefined
+      return {
+        id: ProjectV2.ID.make(`workspace:${root}`),
+        worktree: root,
+        name: name.trim() || undefined,
+      }
+    })
+
     const fromDirectory = Effect.fn("Project.fromDirectory")(function* (directory: string) {
       yield* Effect.logInfo("fromDirectory", { directory })
 
-      const data = yield* projectV2.resolve(AbsolutePath.make(directory))
+      const resolved = yield* projectV2.resolve(AbsolutePath.make(directory))
+      const workspace = yield* workspaceRoot(directory)
+      const data = workspace
+        ? { ...resolved, id: workspace.id, directory: workspace.worktree, vcs: undefined, previous: undefined }
+        : resolved
       const worktree = data.id === ProjectV2.ID.make("global") && !data.vcs ? "/" : data.directory
 
       // Phase 2: upsert
@@ -236,6 +254,7 @@ const layer = Layer.effect(
         ...existing,
         worktree: projectID === ProjectV2.ID.global ? worktree : existing.worktree,
         vcs: data.vcs?.type ?? fakeVcs,
+        name: workspace?.name ?? existing.name,
         time: { ...existing.time, updated: Date.now() },
       }
       if (

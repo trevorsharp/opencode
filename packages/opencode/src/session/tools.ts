@@ -3,6 +3,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { MCP } from "@/mcp"
+import { McpActivation } from "@/mcp/activation"
 import { McpCatalog } from "@/mcp/catalog"
 import { Permission } from "@/permission"
 import { Tool } from "@/tool/tool"
@@ -53,8 +54,18 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const permission = yield* Permission.Service
   const registry = yield* ToolRegistry.Service
   const mcp = yield* MCP.Service
+  const sessions = yield* Session.Service
   const truncate = yield* Truncate.Service
   const flags = yield* RuntimeFlags.Service
+
+  // Clients stay directory-scoped; only the servers this session tree activated
+  // contribute tools, resources, or instructions to its requests.
+  const active = McpActivation.active(yield* McpActivation.root(sessions, input.session.id))
+  const activeResourceClients = Effect.fnUntraced(function* () {
+    return Object.entries(yield* mcp.clients()).filter(
+      (entry) => active.has(entry[0]) && !!entry[1].getServerCapabilities()?.resources,
+    )
+  })
 
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
@@ -94,6 +105,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     providerID: input.model.providerID,
     agent: input.agent,
     permission: input.session.permission,
+    mcpServers: active,
   })) {
     const schema = ProviderTransform.schema(input.model, ToolJsonSchema.fromTool(item))
     tools[item.id] = tool({
@@ -133,10 +145,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     })
   }
 
-  const hasMcpResourceServer = Object.values(yield* mcp.clients()).some(
-    (client) => !!client.getServerCapabilities()?.resources,
-  )
-  if (hasMcpResourceServer) {
+  if ((yield* activeResourceClients()).length) {
     tools[MCP_RESOURCE_TOOLS.list] = tool({
       description:
         "Lists resources provided by connected MCP servers. Resources provide context such as files, database schemas, or application-specific information.",
@@ -157,9 +166,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
           Effect.gen(function* () {
             const parsed = parseListMcpResourcesArgs(args)
             const ctx = context(toRecord(args), opts)
-            const clients = yield* mcp.clients()
-            const resourceServers = Object.entries(clients)
-              .filter((entry) => !!entry[1].getServerCapabilities()?.resources)
+            const resourceServers = (yield* activeResourceClients())
               .map((entry) => entry[0])
               .sort((a, b) => a.localeCompare(b))
             if (parsed.server && !resourceServers.includes(parsed.server)) {
@@ -184,8 +191,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               always: permissionPatterns,
             })
 
-            const resources = Object.values(yield* mcp.resources(parsed.server))
+            const resources = Object.values(yield* mcp.resources(parsed.server, new Set(resourceServers)))
             const filtered = resources
+              .filter((resource) => resourceServers.includes(resource.client))
               .filter((resource) => !parsed.server || resource.client === parsed.server)
               .toSorted((a, b) =>
                 (a.client + "\u0000" + a.name + "\u0000" + a.uri).localeCompare(
@@ -240,9 +248,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
           Effect.gen(function* () {
             const parsed = parseListMcpResourcesArgs(args)
             const ctx = context(toRecord(args), opts)
-            const clients = yield* mcp.clients()
-            const resourceServers = Object.entries(clients)
-              .filter((entry) => !!entry[1].getServerCapabilities()?.resources)
+            const resourceServers = (yield* activeResourceClients())
               .map((entry) => entry[0])
               .sort((a, b) => a.localeCompare(b))
             if (parsed.server && !resourceServers.includes(parsed.server)) {
@@ -267,8 +273,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               always: permissionPatterns,
             })
 
-            const templates = Object.values(yield* mcp.resourceTemplates(parsed.server))
+            const templates = Object.values(yield* mcp.resourceTemplates(parsed.server, new Set(resourceServers)))
             const filtered = templates
+              .filter((template) => resourceServers.includes(template.client))
               .filter((template) => !parsed.server || template.client === parsed.server)
               .toSorted((a, b) =>
                 (a.client + "\u0000" + a.name + "\u0000" + a.uriTemplate).localeCompare(
@@ -327,10 +334,11 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
           Effect.gen(function* () {
             const parsed = parseReadMcpResourceArgs(args)
             const ctx = context(toRecord(args), opts)
-            const clients = yield* mcp.clients()
-            const client = clients[parsed.server]
+            const client = (yield* activeResourceClients()).find((entry) => entry[0] === parsed.server)?.[1]
             if (!client) {
-              throw new Error(`MCP server "${parsed.server}" is not connected`)
+              throw new Error(
+                `MCP server "${parsed.server}" is not available. Activate it with mcp_enable and make sure it is connected.`,
+              )
             }
             if (!client.getServerCapabilities()?.resources) {
               throw new Error(`MCP server "${parsed.server}" does not support resources`)
@@ -387,7 +395,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
 
   if (flags.experimentalCodeMode) return tools
 
-  for (const [key, entry] of Object.entries(yield* mcp.tools())) {
+  for (const [key, entry] of Object.entries(yield* mcp.tools(active))) {
     const item = McpCatalog.convertTool(entry.def, entry.client, entry.timeout)
     const execute = item.execute
     if (!execute) continue

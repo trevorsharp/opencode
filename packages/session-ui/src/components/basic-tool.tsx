@@ -320,11 +320,81 @@ function args(input: Record<string, unknown> | undefined) {
     .slice(0, 3)
 }
 
+export function ToolArguments(props: { input?: Record<string, unknown> }) {
+  const i18n = useI18n()
+
+  return (
+    <ToolSection label="Input">
+      <div data-component="tool-arguments">
+        <div
+          data-slot="tool-arguments-scroll"
+          data-scrollable
+          tabIndex={0}
+          role="region"
+          aria-label={`Tool input: ${i18n.t("ui.scrollView.ariaLabel")}`}
+        >
+          <pre data-slot="tool-arguments-pre">
+            <code>{JSON.stringify(props.input ?? {}, null, 2)}</code>
+          </pre>
+        </div>
+      </div>
+    </ToolSection>
+  )
+}
+
+function ToolSection(props: { label: string; children: JSX.Element }) {
+  return (
+    <section data-component="tool-section" aria-label={props.label}>
+      <div data-slot="tool-section-label">{props.label}</div>
+      {props.children}
+    </section>
+  )
+}
+
+export function ToolResponse(props: { output?: string }) {
+  const i18n = useI18n()
+
+  return (
+    <ToolSection label="Output">
+      <div
+        data-component="tool-output"
+        data-scrollable
+        tabIndex={0}
+        role="region"
+        aria-label={`Tool output: ${i18n.t("ui.scrollView.ariaLabel")}`}
+      >
+        <pre>
+          <code>{props.output}</code>
+        </pre>
+      </div>
+    </ToolSection>
+  )
+}
+
+export function ToolDetails(props: { input?: Record<string, unknown>; output?: string; alwaysArguments?: boolean }) {
+  const hasArguments = () => props.alwaysArguments || Object.keys(props.input ?? {}).length > 0
+
+  return (
+    <>
+      <Show when={hasArguments()}>
+        <ToolArguments input={props.input} />
+      </Show>
+      <Show when={props.output}>
+        <ToolResponse output={props.output} />
+      </Show>
+    </>
+  )
+}
+
 export function GenericTool(props: {
   tool: string
   status?: string
   hideDetails?: boolean
   input?: Record<string, unknown>
+  output?: string
+  defaultOpen?: boolean
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
 }) {
   const i18n = useI18n()
 
@@ -332,12 +402,20 @@ export function GenericTool(props: {
     <BasicTool
       icon="mcp"
       status={props.status}
+      allowOpenWhilePending
       trigger={{
         title: i18n.t("ui.basicTool.called", { tool: props.tool }),
         subtitle: label(props.input),
         args: args(props.input),
       }}
       hideDetails={props.hideDetails}
-    />
+      defaultOpen={props.defaultOpen}
+      open={props.open}
+      onOpenChange={props.onOpenChange}
+    >
+      <div data-component="generic-tool-details">
+        <ToolDetails input={props.input} output={props.output} alwaysArguments />
+      </div>
+    </BasicTool>
   )
 }

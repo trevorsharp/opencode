@@ -2,7 +2,7 @@ import type { Message, Session } from "@opencode-ai/sdk/v2/client"
 import { showToast } from "@/utils/toast"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { Binary } from "@opencode-ai/core/util/binary"
-import { useNavigate, useParams, useSearchParams } from "@solidjs/router"
+import { useLocation, useNavigate, useParams, useSearchParams } from "@solidjs/router"
 import { batch, startTransition, type Accessor } from "solid-js"
 import { useTabs } from "@/context/tabs"
 import { useServerSync, type ServerSync } from "@/context/server-sync"
@@ -14,10 +14,10 @@ import { type ContextItem, type ImageAttachmentPart, type Prompt, type usePrompt
 import { useSDK, type DirectorySDK } from "@/context/sdk"
 import { useSync, type DirectorySync } from "@/context/sync"
 import { Identifier } from "@/utils/id"
+import { legacySessionHref, workspaceRootParam } from "@/utils/session-route"
 import { Worktree as WorktreeState } from "@/utils/worktree"
 import { buildRequestParts } from "./build-request-parts"
 import { setCursorPosition } from "./editor-dom"
-import { formatServerError } from "@/utils/server-errors"
 import { ScopedKey } from "@/utils/server-scope"
 import { createPromptSubmissionState } from "./submission-state"
 import { normalizeSessionInfo } from "@/utils/session"
@@ -72,42 +72,6 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
     const ok = await input.before?.()
     if (ok === false) return false
     return true
-  }
-
-  const [head, ...tail] = text.split(" ")
-  const cmd = head?.startsWith("/") ? head.slice(1) : undefined
-  if (cmd && input.sync.data.command.find((item) => item.name === cmd)) {
-    setBusy()
-    try {
-      if (!(await wait())) {
-        setIdle()
-        return false
-      }
-
-      const messageID = Identifier.ascending("message")
-      await input.api.command({
-        sessionID: input.draft.sessionID,
-        id: messageID,
-        command: cmd,
-        arguments: tail.join(" "),
-        agent: input.draft.agent,
-        model: {
-          id: input.draft.model.modelID,
-          providerID: input.draft.model.providerID,
-          variant: input.draft.variant,
-        },
-        files: await Promise.all(
-          images.map(async (attachment) => ({
-            uri: await blobDataUrl(attachment.blob, attachment.mime),
-            name: attachment.filename,
-          })),
-        ),
-      })
-      return true
-    } catch (err) {
-      setIdle()
-      throw err
-    }
   }
 
   const messageID = input.messageID ?? Identifier.ascending("message")
@@ -229,10 +193,12 @@ type PromptSubmitInput = {
   onAbort?: () => void
   onSubmit?: () => void
   model?: ModelSelection
+  agent?: string
 }
 
 export function createPromptSubmit(input: PromptSubmitInput) {
   const navigate = useNavigate()
+  const location = useLocation()
   const sdk = useSDK()
   const sync = useSync()
   const serverSync = useServerSync()
@@ -337,7 +303,12 @@ export function createPromptSubmit(input: PromptSubmitInput) {
 
     const modelSelection = input.model ?? local.model
     const currentModel = modelSelection.current()
-    const currentAgent = local.agent.current()
+    // The legacy composer names its agent literally, and that agent must be submitted even when
+    // configuration hides it from the visible list, so resolve it against every known agent and
+    // fall back to the bare name rather than to whichever agent happens to be visible first.
+    const currentAgent = input.agent
+      ? (sync().data.agent.find((item) => item.name === input.agent) ?? { name: input.agent })
+      : local.agent.current()
     const variant = modelSelection.variant.current()
     if (!currentModel || !currentAgent) {
       showToast({
@@ -355,6 +326,9 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     const isNewSession = !params.id
     const shouldAutoAccept = isNewSession && input.autoAccept()
     const worktreeSelection = input.newSessionWorktree?.() || "main"
+    // Only the fragment of the route being left is preserved; one captured when the
+    // composer mounted would outlive the navigation it belonged to.
+    const routeState = { search: location.search, hash: location.hash || window.location.hash }
 
     let sessionDirectory = projectDirectory
     let client = sdk().client
@@ -428,7 +402,18 @@ export function createPromptSubmit(input: PromptSubmitInput) {
           layout.handoff.setTabs(base64Encode(sessionDirectory), session.id)
           const draftID = search.draftId
           if (draftID) tabs.promoteDraft(draftID, { server: tabs.draft(draftID).server, sessionId: session.id })
-          else navigate(`/${base64Encode(sessionDirectory)}/session/${session.id}`)
+          else {
+            const href = legacySessionHref(
+              sessionDirectory,
+              session.id,
+              workspaceRootParam(routeState.search),
+              routeState,
+            )
+            navigate(href)
+            if (routeState.hash) {
+              requestAnimationFrame(() => window.history.replaceState(window.history.state, "", href))
+            }
+          }
           submission.retarget(prompt.capture({ dir: base64Encode(sessionDirectory), id: session.id }))
         })
       }
@@ -507,41 +492,6 @@ export function createPromptSubmit(input: PromptSubmitInput) {
           restoreInput()
         })
       return
-    }
-
-    if (text.startsWith("/")) {
-      const [cmdName, ...args] = text.split(" ")
-      const commandName = cmdName.slice(1)
-      const customCommand = sync().data.command.find((c) => c.name === commandName)
-      if (customCommand) {
-        clearInput()
-        const messageID = Identifier.ascending("message")
-        serverSync().session.set("session_status", session.id, { type: "busy" })
-        sdk()
-          .api.session.command({
-            sessionID: session.id,
-            id: messageID,
-            command: commandName,
-            arguments: args.join(" "),
-            agent,
-            model: { id: model.modelID, providerID: model.providerID, variant },
-            files: await Promise.all(
-              images.map(async (attachment) => ({
-                uri: await blobDataUrl(attachment.blob, attachment.mime),
-                name: attachment.filename,
-              })),
-            ),
-          })
-          .catch((err) => {
-            serverSync().session.set("session_status", session.id, { type: "idle" })
-            showToast({
-              title: language.t("prompt.toast.commandSendFailed.title"),
-              description: formatServerError(err, language.t, language.t("common.requestFailed")),
-            })
-            restoreInput()
-          })
-        return
-      }
     }
 
     const commentItems = context.filter((item) => item.type === "file" && !!item.comment?.trim())

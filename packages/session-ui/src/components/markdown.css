@@ -383,3 +383,7 @@ body:not([data-new-layout]) [data-component="markdown"] {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+
+html[data-theme="trs"] [data-component="markdown"] :not(pre) > code {
+  color: #90caff;
+}

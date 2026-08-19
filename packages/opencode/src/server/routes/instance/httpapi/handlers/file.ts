@@ -10,6 +10,7 @@ import ignore from "ignore"
 import path from "path"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
+import { findSupportedDirectories } from "@/server/supported-directory-discovery"
 
 export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handlers) =>
   Effect.gen(function* () {
@@ -45,18 +46,31 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
     }) {
       const directory = (yield* InstanceState.context).directory
       const limit = ctx.query.limit ?? 10
-      const type = ctx.query.type ?? (ctx.query.dirs === "false" ? "file" : undefined)
+      const type =
+        ctx.query.type ?? (ctx.query.dirs === "true" ? "directory" : ctx.query.dirs === "false" ? "file" : undefined)
+      const query = ctx.query.query.trim()
+      const useDefaultDirectories = type === "directory" || (!query && type === undefined)
       const started = performance.now()
-      const found = yield* filesystem(FileSystem.Service.use((fs) => fs.find({ query: ctx.query.query, limit, type })))
+      const found = yield* filesystem(FileSystem.Service.use((fs) => fs.find({ query, limit, type }))).pipe(
+        Effect.catch((error) => {
+          if (!useDefaultDirectories) return Effect.die(error)
+          return Effect.logWarning("find file failed", { directory, query, type, error }).pipe(
+            Effect.andThen(Effect.succeed<{ path: string }[]>([])),
+          )
+        }),
+      )
+      const supported = useDefaultDirectories ? yield* findSupportedDirectories(directory, query, limit) : []
+      const results = Array.from(new Set([...supported, ...found.map((item) => item.path)])).slice(0, limit)
       yield* Effect.logInfo("find file", {
+        engine: supported.length ? "directory-list" : "fff",
         query: ctx.query.query,
         type,
         directory,
         limit,
-        results: found.length,
+        results: results.length,
         duration: Math.round(performance.now() - started),
       })
-      return found.map((item) => item.path)
+      return results
     })
 
     const findSymbol = Effect.fn("FileHttpApi.findSymbol")(function* () {

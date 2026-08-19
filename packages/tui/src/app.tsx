@@ -549,13 +549,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   )
 
   const connected = useConnected()
-  const currentWorktreeWorkspace = createMemo(() => {
-    const workspaceID = project.workspace.current()
-    if (!workspaceID) return
-    const workspace = project.workspace.get(workspaceID)
-    if (workspace?.type !== "worktree" || !workspace.directory) return
-    return workspace
-  })
   const appCommands = createMemo(() =>
     [
       {
@@ -589,21 +582,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
           route.navigate({
             type: "home",
           })
-          dialog.clear()
-        },
-      },
-      {
-        name: "workspace.copy_path",
-        title: "Copy worktree path",
-        category: "Workspace",
-        enabled: () => currentWorktreeWorkspace() !== undefined,
-        run: async () => {
-          const workspace = currentWorktreeWorkspace()
-          if (!workspace?.directory) return
-          await clipboard
-            .write?.(workspace.directory)
-            .then(() => toast.show({ message: "Copied worktree path", variant: "info" }))
-            .catch(toast.error)
           dialog.clear()
         },
       },

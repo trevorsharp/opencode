@@ -90,12 +90,13 @@ export function createPromptModelSelection(input: { agent: () => { model?: Model
         return prompt.model.current()?.variant
       },
       current() {
+        const selected = this.selected()
         const resolved = resolveModelVariant({
           variants: this.list(),
-          selected: this.selected(),
+          selected,
           configured: this.configured(),
         })
-        if (resolved) return resolved
+        if (resolved || selected === null) return resolved
         const model = current()
         if (!model) return
         const saved = models.variant.get({ providerID: model.provider.id, modelID: model.id })

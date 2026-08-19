@@ -10,6 +10,8 @@ import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { Icon } from "@opencode-ai/ui/icon"
 import { Logo } from "@opencode-ai/ui/logo"
 import { useNavigate } from "@solidjs/router"
+import { errorMessage } from "@/pages/layout/helpers"
+import { showToast } from "@/utils/toast"
 import { DateTime } from "luxon"
 import { createMemo, For, Match, Switch } from "solid-js"
 
@@ -41,6 +43,7 @@ export function LegacyHome() {
     const serverCtx = global.ensureServerCtx(conn)
     serverCtx.projects.open(directory)
     serverCtx.projects.touch(directory)
+    void serverCtx.sync.project.refresh().catch(() => undefined)
     navigate(`/${base64Encode(directory)}`)
   }
 
@@ -48,6 +51,26 @@ export function LegacyHome() {
     if (serverUnreachable()) return
     const conn = server.current
     if (!conn) return
+
+    const createEmptyWorkspace = async (name: string) => {
+      const serverCtx = global.ensureServerCtx(conn)
+      const directory = serverCtx.sync.data.path.directory || serverCtx.sync.data.path.home
+      const created = await serverCtx.sdk.client.worktree
+        .create({
+          ...(directory ? { directory } : {}),
+          worktreeCreateInput: { name, mode: "workspace-root" },
+        })
+        .then((result) => result.data)
+        .catch((error) => {
+          showToast({
+            title: language.t("workspace.create.failed.title"),
+            description: errorMessage(error, language.t("common.requestFailed")),
+          })
+          return undefined
+        })
+      if (!created?.directory) return
+      return created.directory
+    }
 
     const resolve = (result: string | string[] | null) => {
       if (Array.isArray(result)) {
@@ -61,6 +84,7 @@ export function LegacyHome() {
       server: conn,
       title: language.t("command.project.open"),
       multiple: true,
+      onCreateWorkspace: createEmptyWorkspace,
       onSelect: resolve,
     })
   }

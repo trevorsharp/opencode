@@ -29,6 +29,7 @@ import { ProviderTransform } from "./transform"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelStatus } from "./model-status"
+import { ClaudeCLI } from "./claude-cli"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
 
@@ -167,6 +168,10 @@ function selectBedrockMantleLanguageModel(sdk: BundledSDK, modelID: string) {
 
 function custom(dep: CustomDep): Record<string, CustomLoader> {
   return {
+    [ClaudeCLI.PROVIDER_ID]: Effect.fnUntraced(function* () {
+      const env = yield* dep.env()
+      return { autoload: ClaudeCLI.available(env) }
+    }),
     anthropic: () =>
       Effect.succeed({
         autoload: false,
@@ -1375,6 +1380,12 @@ const layer = Layer.effect(
         const catalog = mapValues(modelsDev, fromModelsDevProvider)
         const database = mapValues(catalog, toPublicInfo)
 
+        // Claude CLI models run a local process instead of an HTTP API, so they
+        // have no models.dev entry to merge with. They stay out of the database
+        // entirely when the CLI cannot run: provider config is re-applied against
+        // it later and would otherwise advertise models that cannot execute.
+        if (ClaudeCLI.available(yield* env.all())) database[ClaudeCLI.PROVIDER_ID] = ClaudeCLI.catalog()
+
         const providers: Record<ProviderV2.ID, Info> = {} as Record<ProviderV2.ID, Info>
         const languages = new Map<string, LanguageModelV3>()
         const modelLoaders: {
@@ -1864,6 +1875,14 @@ const layer = Layer.effect(
     })
 
     const getLanguage = Effect.fn("Provider.getLanguage")(function* (model: Model) {
+      // External-runtime models name an execution type where an SDK package would
+      // be, so resolving one would try to load a package that does not exist.
+      if (model.api.npm === ClaudeCLI.EXECUTION)
+        return yield* new ModelNotFoundError({
+          providerID: model.providerID,
+          modelID: model.id,
+          cause: new Error(`${model.providerID} models run as a local process and have no language model`),
+        })
       const s = yield* InstanceState.get(state)
       const envs = yield* env.all()
       const key = `${model.providerID}/${model.id}`
