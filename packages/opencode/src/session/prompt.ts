@@ -1026,21 +1026,7 @@ const layer = Layer.effect(
         }
 
         if (part.type === "agent") {
-          const perm = Permission.evaluate("task", part.name, ag.permission)
-          const hint = perm.action === "deny" ? " . Invoked by user; guaranteed to exist." : ""
-          return [
-            { ...part, messageID: info.id, sessionID: input.sessionID },
-            {
-              messageID: info.id,
-              sessionID: input.sessionID,
-              type: "text",
-              synthetic: true,
-              text:
-                " Use the above message and context to generate a prompt and call the task tool with subagent: " +
-                part.name +
-                hint,
-            },
-          ]
+          return [{ ...part, messageID: info.id, sessionID: input.sessionID }]
         }
 
         return [{ ...part, messageID: info.id, sessionID: input.sessionID }]

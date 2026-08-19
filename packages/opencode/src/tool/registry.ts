@@ -244,7 +244,6 @@ const layer = Layer.effect(
             tool.grep,
             tool.edit,
             tool.write,
-            tool.task,
             tool.fetch,
             tool.todo,
             tool.search,
