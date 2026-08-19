@@ -49,4 +49,4 @@ This fork uses build-only repository verification.
 
 ## Agent Tool Guidance
 
-`glob-directory-guidance.md` documents the fork's prompt-only clarification that the glob tool does not return directories. Tool-guidance changes may only clarify existing behavior; they must not change what a tool does.
+`glob-directory-guidance.md` documents the fork's prompt-only clarification that the glob tool does not return directories. `shell-tool-guidance.md` documents the execution-only shell prompt, including its deliberate exclusion of version-control workflow policy. Tool-guidance changes may only clarify existing behavior; they must not change what a tool does.
