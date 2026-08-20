@@ -30,6 +30,7 @@ export const IDLE_TIMEOUT = 300_000
 const MODELS: { id: string; name: string }[] = [
   { id: "claude-fable-5", name: "Claude Fable 5" },
   { id: "claude-opus-5", name: "Claude Opus 5" },
+  { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
 ]
 
 function model(input: { id: string; name: string }): Model {
