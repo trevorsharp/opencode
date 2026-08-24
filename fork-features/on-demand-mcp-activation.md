@@ -4,7 +4,7 @@
 
 Keep configured MCP servers discoverable without placing every MCP tool definition in every model request.
 
-OpenCode exposes a small server list and lets the model activate only the MCP servers needed for the current session tree. Underlying MCP clients remain reusable at directory scope, while tool definitions, resources, and server instructions are visible only to the root session and its nested sessions after activation.
+OpenCode includes a small server-name list in the model's instructions and lets the model activate only the MCP servers needed for the current session tree. Underlying MCP clients remain reusable at directory scope, while tool definitions, resources, and server instructions are visible only to the root session and its nested sessions after activation.
 
 This feature applies to the legacy session runtime. Equivalent v2 support is out of scope until the v2 runtime owns MCP connection and tool registration.
 
@@ -26,32 +26,34 @@ Configuration, credentials, client processes, transport connections, and the fet
 - Activating a server from a nested session makes it active for the entire session tree.
 - Separate root session trees in the same directory may activate different MCP servers while sharing the same underlying clients.
 - Agents and sessions continue to apply their own tool permissions after activation. Activation never grants permission to call an MCP tool.
+- Configured server names eligible for activation are included in each model request without requiring a discovery tool call.
 - MCP server instructions are included only for servers active in the requesting session tree.
 - MCP resources and resource templates are discoverable and readable only from servers active in the requesting session tree.
 - The feature introduces no database schema changes.
 
-## Agent Tools
+## Agent Discovery And Tools
 
-Two small built-in tools are always eligible for the normal OpenCode tool catalog and the Claude CLI facade.
+One small built-in tool is always eligible for the normal OpenCode tool catalog and the Claude CLI facade.
 
-### `mcp_list`
+### Server List
 
-`mcp_list` takes no arguments and returns only the configured MCP server names that the current agent is allowed to activate.
+Each provider request includes the configured MCP server names that the current agent is allowed to activate. Normal providers receive the list in the system prompt. Claude CLI receives it through the private facade registration's MCP instructions.
 
-Example result:
+Example list:
 
 ```json
 ["Carvana Publish", "Chrome DevTools", "Datadog", "Fastlane", "Google Drive", "Jira", "Slack", "Snowflake", "Splunk"]
 ```
 
 - Names match the configured names shown by the existing MCP status UI, including servers configured as disabled.
-- The result contains no descriptions, statuses, tool names, or tool schemas.
+- The list contains no descriptions, statuses, tool names, or tool schemas.
 - A server denied by the activation permission, in either the agent's or the session's ruleset, is omitted.
-- Listing performs no connection or activation side effect and requires no permission prompt.
+- Constructing the list performs no connection or activation side effect and requires no permission prompt.
+- The list is rebuilt whenever the turn resolves its tools and instructions, including after Claude CLI activation refreshes the facade.
 
 ### `mcp_enable`
 
-`mcp_enable` accepts one or more names returned by `mcp_list`.
+`mcp_enable` accepts one or more names from the available server list.
 
 Example input:
 
@@ -71,7 +73,7 @@ Example input:
 - Repeated activation is idempotent.
 - The result reports the final status of every requested server, including connected, failed, needs authentication, and needs client registration.
 - A failed server does not prevent independently successful servers in the same authorized batch from becoming available.
-- A successful result may report newly available public tool names, but those names are not part of `mcp_list`.
+- A successful result may report newly available public tool names, but those names are not part of the available server list.
 - Authentication remains user-driven through the existing MCP authentication UI and endpoints.
 
 The tool name describes session activation rather than persisted configuration. `mcp_enable` does not write `enabled: true` to an OpenCode configuration file.
@@ -100,7 +102,7 @@ Session tree B:
 
 Tool resolution intersects the connected catalog, the session tree's activation set, prompt-level tool selection, and agent/session permissions. A capability must pass every boundary before it is materialized or callable.
 
-Activation state is process-local and requires no new persisted record. It remains available to later turns and nested sessions while the process retains that root session's activation state. Restarting OpenCode clears activation state; a resumed session can call `mcp_list` and `mcp_enable` again. Directory disposal closes the underlying MCP clients through the existing lifecycle.
+Activation state is process-local and requires no new persisted record. It remains available to later turns and nested sessions while the process retains that root session's activation state. Restarting OpenCode clears activation state; a resumed session receives the available server list again and can call `mcp_enable`. Directory disposal closes the underlying MCP clients through the existing lifecycle.
 
 No automatic disconnect occurs when a session or nested session becomes idle. Disconnecting a shared client at a session boundary could interrupt another session tree using the same directory-scoped connection.
 
@@ -108,11 +110,11 @@ No automatic disconnect occurs when a session or nested session becomes idle. Di
 
 For an ordinary provider turn:
 
-1. The model calls `mcp_list` when it needs to discover configured servers, or follows skill guidance that names a server directly.
+1. The model reads the available server names from its system instructions or follows skill guidance that names a server directly.
 2. The model calls `mcp_enable` with the required names.
 3. OpenCode validates and authorizes the complete batch, updates session-tree activation, and connects missing clients.
 4. The tool result settles normally.
-5. The existing session loop resolves tools again before the next provider request.
+5. The existing session loop resolves tools and the available server list again before the next provider request.
 6. Only capabilities from activated servers are materialized for that session tree.
 
 The first version activates at server granularity. Every permitted tool from an activated server may be materialized for ordinary providers. Fine-grained tool search or per-tool materialization may be added separately if one activated server still contributes excessive context.
@@ -135,7 +137,7 @@ This keeps skill invocation, command-injected skill guidance, and general MCP di
 
 ## Claude CLI Flow
 
-Claude CLI discovers `mcp_list` and `mcp_enable` through OpenCode's private MCP facade. Both names belong to the facade's fixed catalog and remain available through Claude's native `ToolSearch` behavior.
+Claude CLI receives the available server list through OpenCode's private MCP facade instructions and discovers `mcp_enable` through Claude's native `ToolSearch` behavior.
 
 The facade catalog is rebuilt after activation changes available capabilities:
 
@@ -171,14 +173,14 @@ Supporting Claude activation requires the external runtime to refresh more than 
 - The facade catalog and reserved-name collision checks must run against the refreshed tool map.
 - The facade rendezvous must accept exactly the names offered by the refreshed catalog.
 - A fresh MCP registration and token must be created for the resumed Claude process.
-- MCP server instructions must be rebuilt from the session tree's active servers. Claude receives them as the facade registration's own MCP instructions, because an external execution carries only the workflow-supplied system prompt.
+- The available server list and active MCP server instructions must be rebuilt for the session tree. Claude receives them as the facade registration's own MCP instructions, because an external execution carries only the workflow-supplied system prompt.
 - The previous execution's registration must be released and remain unauthorized.
 
 Reusing a fresh transport with the previous execution's frozen tool array is not a valid refresh.
 
 ## Permissions And Safety
 
-- `mcp_list` reveals only configured server names eligible for the current agent.
+- The model instructions reveal only configured server names eligible for the current agent and session.
 - `mcp_enable` can activate only configured servers and never exposes dynamic server creation.
 - Activation permission is checked before starting a process or network connection.
 - Batch authorization completes before any side effect.
@@ -214,7 +216,7 @@ The existing MCP status UI continues to show and control directory-scoped connec
 
 - Introduce no database tables, columns, indexes, migrations, or constraints.
 - Keep activation state process-local.
-- Persist `mcp_list`, `mcp_enable`, and MCP tool activity as ordinary session tool calls and results.
+- Persist `mcp_enable` and MCP tool activity as ordinary session tool calls and results.
 - Keep Claude execution identities in the existing optional metadata described by `claude-cli-external-model-runtime.md`.
 - Upstream OpenCode can open and display the same session database while ignoring fork-only tool semantics.
 
@@ -230,7 +232,7 @@ The existing MCP status UI continues to show and control directory-scoped connec
 
 ## Validation
 
-- `mcp_list` returns only configured, activation-eligible server names and performs no side effect.
+- Each model request includes only configured, activation-eligible server names, and building the list performs no side effect.
 - `mcp_enable` accepts a batch, authorizes the complete batch first, and connects allowed servers idempotently.
 - Unknown names and permission denial cause no partial connection or activation.
 - Successful and failed servers in one authorized batch report independent final statuses.
@@ -241,7 +243,7 @@ The existing MCP status UI continues to show and control directory-scoped connec
 - Activated MCP tools still enforce their individual permissions.
 - Restarting OpenCode clears activation without requiring database repair or migration.
 - UI connection status refreshes after agent-driven MCP transitions.
-- Claude discovers `mcp_list` and `mcp_enable` through `ToolSearch`.
+- Claude receives the available server list through facade instructions and discovers `mcp_enable` through `ToolSearch`.
 - A catalog-changing Claude activation ends one execution, rebuilds the tool and instruction catalogs, and resumes the same conversation in the same OpenCode assistant turn.
 - The resumed Claude execution receives a new facade registration and can find the newly activated MCP tools through `ToolSearch`.
 - An idempotent or unsuccessful activation that changes no catalog does not spend another Claude execution.
@@ -256,7 +258,7 @@ The existing MCP status UI continues to show and control directory-scoped connec
 - Persisting MCP configuration changes from `mcp_enable`.
 - Starting one MCP client per session or nested session.
 - Automatically disconnecting shared MCP clients when a session becomes idle.
-- Adding descriptions, statuses, tool names, or schemas to `mcp_list`.
+- Adding descriptions, statuses, tool names, or schemas to the available server list.
 - Allowing an agent to add or modify MCP server configuration.
 - Automatically activating a server merely because it connected through the UI.
 - Fine-grained per-tool search or materialization for ordinary providers in the first version.

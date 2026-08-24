@@ -147,21 +147,36 @@ const layer = Layer.effect(
         active?: ReadonlySet<string>,
       ) {
         const ruleset = Permission.merge(agent.permission, permission ?? [])
+        const available = Object.keys(yield* mcp.status())
+          .filter((name) => Permission.evaluate("mcp_enable", name, ruleset).action !== "deny")
+          .toSorted((left, right) => left.localeCompare(right))
         const instructions = (yield* mcp.instructions())
           .filter((item) => !active || active.has(item.name))
           .filter(
             (item) => item.tools.length === 0 || Permission.disabled(item.tools, ruleset).size < item.tools.length,
           )
-        if (instructions.length === 0) return
+        if (available.length === 0 && instructions.length === 0) return
 
         return [
-          "<mcp_instructions>",
-          ...instructions.flatMap((item) => [
-            `  <server name="${item.name}">`,
-            ...item.instructions.split("\n").map((line) => `    ${line}`),
-            "  </server>",
-          ]),
-          "</mcp_instructions>",
+          ...(available.length
+            ? [
+                "<available_mcp_servers>",
+                `  ${JSON.stringify(available)}`,
+                "  Activate required servers with mcp_enable.",
+                "</available_mcp_servers>",
+              ]
+            : []),
+          ...(instructions.length
+            ? [
+                "<mcp_instructions>",
+                ...instructions.flatMap((item) => [
+                  `  <server name="${item.name}">`,
+                  ...item.instructions.split("\n").map((line) => `    ${line}`),
+                  "  </server>",
+                ]),
+                "</mcp_instructions>",
+              ]
+            : []),
         ].join("\n")
       }),
     })

@@ -117,7 +117,6 @@ const TOOL_HELP_DESCRIPTION =
  */
 const FACADE_TOOLS = [
   "notify",
-  "mcp_list",
   "mcp_enable",
   "workflow_run",
   "workflow_status",

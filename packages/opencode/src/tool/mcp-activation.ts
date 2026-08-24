@@ -12,48 +12,16 @@ import * as Tool from "./tool"
  */
 const ACTIVATION_PERMISSION = "mcp_enable"
 
-const LIST_DESCRIPTION = [
-  "List the MCP servers that can be activated for this conversation.",
-  "Returns configured server names only, with no descriptions, statuses, or tool schemas.",
-  "Their tools are not available until you activate them with mcp_enable.",
-].join("\n")
-
 const ENABLE_DESCRIPTION = [
   "Activate one or more MCP servers for this conversation so their tools, resources, and instructions become available.",
   "Pass every server you need in one call; the whole batch is authorized together.",
-  "Names must come from mcp_list. Activation is idempotent and does not change any configuration file.",
+  "Names must come from the available MCP server list in your instructions.",
+  "Activation is idempotent and does not change any configuration file.",
 ].join("\n")
-
-export const ListParameters = Schema.Struct({})
-
-export const McpListTool = Tool.define(
-  "mcp_list",
-  Effect.gen(function* () {
-    const mcp = yield* MCP.Service
-    const agents = yield* Agent.Service
-    const sessions = yield* Session.Service
-
-    return {
-      description: LIST_DESCRIPTION,
-      parameters: ListParameters,
-      execute: (_params: Schema.Schema.Type<typeof ListParameters>, ctx: Tool.Context) =>
-        Effect.gen(function* () {
-          const names = (yield* eligible(mcp, agents, sessions, ctx)).toSorted((left, right) =>
-            left.localeCompare(right),
-          )
-          return {
-            title: `${names.length} MCP servers`,
-            metadata: { servers: names },
-            output: JSON.stringify(names),
-          }
-        }).pipe(Effect.orDie),
-    }
-  }),
-)
 
 export const Parameters = Schema.Struct({
   names: Schema.Array(Schema.String).annotate({
-    description: "MCP server names to activate, exactly as returned by mcp_list",
+    description: "MCP server names to activate, exactly as listed in your instructions",
   }),
 })
 
@@ -79,7 +47,7 @@ export const McpEnableTool = Tool.define(
           if (unknown.length)
             return yield* Effect.die(
               new Error(
-                `Unknown MCP server${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}. Call mcp_list for the available names.`,
+                `Unknown MCP server${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}. Available names: ${JSON.stringify((yield* eligible(mcp, agents, sessions, ctx)).toSorted((left, right) => left.localeCompare(right)))}`,
               ),
             )
 
