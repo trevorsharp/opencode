@@ -628,9 +628,22 @@ const layer: Layer.Layer<
       )
       const match = data.find((item) => item !== undefined)
       const entries = match ? yield* workspaceEntries(match) : []
+      yield* syncWorkspaceName(match?.name)
       yield* syncSandboxes(entries)
       return entries
     })
+
+    const syncWorkspaceName = Effect.fnUntraced(
+      function* (name: string | undefined) {
+        const next = name?.trim()
+        if (!next) return
+        const ctx = yield* InstanceState.context
+        const current = yield* project.get(ctx.project.id)
+        if (current?.name === next) return
+        yield* project.update({ projectID: ctx.project.id, name: next })
+      },
+      Effect.catchCause((cause) => Effect.logWarning("workspace name reconciliation failed", { cause })),
+    )
 
     const syncSandboxes = Effect.fnUntraced(
       function* (entries: readonly { directory: string }[]) {
