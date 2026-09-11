@@ -104,21 +104,22 @@ function claudeResumeSessionID(input: {
   // Anything chronologically between the previous turn and this one means the resumed
   // transcript is no longer the transcript Claude would continue from.
   const assistant = ordered[index - 1]
-  if (
-    !assistant ||
-    assistant.info.role !== "assistant" ||
-    !assistant.info.finish ||
-    !assistant.info.time.completed ||
-    assistant.info.error
-  )
-    return
+  if (!assistant || assistant.info.role !== "assistant" || !assistant.info.time.completed) return
   const answered = ordered[index - 2]
   if (!answered || answered.info.role !== "user" || assistant.info.parentID !== answered.info.id) return
+  if (assistant.info.providerID !== input.model.providerID || assistant.info.modelID !== input.model.id) return
+  if (SessionV1.AbortedError.isInstance(assistant.info.error)) {
+    const part = assistant.parts.findLast((part) => "metadata" in part && isRecord(part.metadata))
+    if (!part || !("metadata" in part) || !isRecord(part.metadata)) return
+    const metadata = part.metadata[ClaudeCLI.EXECUTION]
+    if (!isRecord(metadata) || typeof metadata.claudeSessionID !== "string") return
+    return metadata.claudeSessionID
+  }
+  if (!assistant.info.finish || assistant.info.error) return
   const step = assistant.parts.findLast((part) => part.type === "step-finish")
   if (!step || !isRecord(step.metadata)) return
   const metadata = step.metadata[ClaudeCLI.EXECUTION]
   if (!isRecord(metadata)) return
-  if (metadata.providerID !== input.model.providerID || metadata.modelID !== input.model.id) return
   if (metadata.messageID !== assistant.info.id || typeof metadata.claudeSessionID !== "string") return
   return metadata.claudeSessionID
 }

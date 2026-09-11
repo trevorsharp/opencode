@@ -97,13 +97,14 @@ The runtime also preserves these restrictions:
 - Strict MCP configuration naming exactly one server: OpenCode's own tool facade.
 - Chrome integration disabled.
 - No Claude subagent-launching tool.
-- Bundled Claude skills and auto memory disabled through the child process environment; user and project skills remain available.
+- Bundled Claude skills, auto memory, and the `thrifty_sonic` experiment disabled through the child process environment; user and project skills remain available.
 - Claude session persistence enabled so later OpenCode prompts can resume an exact completed turn.
 - Workflow-provided system instructions appended to the Claude prompt.
 - Optional JSON schema supplied for structured-output requests.
 - Image turns use one newline-terminated `stream-json` user message on stdin; text-only turns retain plain-text stdin.
+- Partial message output enabled so text and readable thinking reach OpenCode as Claude produces them.
 
-No additional environment restrictions, permission disclosures, or security policy are required beyond preserving this behavior. The runtime sets `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1` and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` directly, so this policy does not depend on any user's Claude settings file.
+No additional environment restrictions, permission disclosures, or security policy are required beyond preserving this behavior. The runtime sets `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, and `CLAUDE_CODE_THRIFTY_SONIC=0` directly, so this policy does not depend on any user's Claude settings file.
 
 A turn that produces no output for five minutes is treated as stuck: the runtime terminates the process group and settles the turn as failed. Installations can widen or narrow that window with `provider["claude-cli"].options.chunkTimeout`, the same option other providers use for silent streams. A facade call cannot trip that window: the watchdog measures output OpenCode is waiting for, and while OpenCode is running a tool for Claude it is not waiting for any.
 
@@ -175,6 +176,9 @@ How a facade call behaves:
 
 Claude retains ownership of its internal tool loop.
 
+- Claude `stream_event` text and thinking blocks use the provider message ID plus content block index as their stable OpenCode stream identity. Starts, deltas, and stops map to the corresponding OpenCode text or reasoning lifecycle.
+- Completed assistant events remain authoritative for tool calls. Their text and thinking blocks are omitted only when a matching partial lifecycle was observed, and otherwise provide the compatibility fallback for output without partial events.
+- Provider message and result boundaries close any still-open text or thinking lifecycle. Cancellation may instead leave an open lifecycle for the session processor's ordinary interrupted-part cleanup.
 - Tool calls appear as provider-executed activity.
 - OpenCode persists and displays the original tool name, arguments, output, and status.
 - Task bookkeeping tools are the one exception and become native todos.
@@ -236,15 +240,15 @@ Claude CLI models support workflow structured-output requests through the normal
 
 ## Multi-Prompt Continuation
 
-Claude's `system/init` session ID is persisted as optional metadata on the completed OpenCode step, with the producing provider, model, and assistant message IDs. A later prompt passes `--resume` with `--fork-session` only when all of these conditions hold:
+Claude's `system/init` session ID is persisted as optional metadata on streamed assistant parts and on the completed OpenCode step. A later prompt passes `--resume` with `--fork-session` only when all of these conditions hold:
 
 - The selected model is the same Claude CLI provider and model.
 - The metadata belongs to the immediately preceding completed assistant message.
-- No failed, interrupted, or newer assistant turn intervenes.
+- No failed or newer assistant turn intervenes; an immediately preceding user-aborted turn is resumable only when one of its streamed parts retained the Claude session ID.
 - The newest user message is a real user prompt rather than synthetic continuation state, with one exception below.
 - The turn is not a structured-output retry.
 
-Resumed executions fork the preceding Claude session so every completed OpenCode turn owns an immutable Claude continuation boundary. This allows undo to resume a surviving earlier turn without retaining the reverted messages in Claude's history. They send only the newest ordered user content because Claude owns the durable conversation history. Historical requests without an exact resume boundary remain rejected rather than silently losing assistant or tool history. First prompts and structured-output retries retain fresh-execution behavior, and Claude-owned same-turn tool activity never triggers another OpenCode provider turn.
+Resumed executions fork the preceding Claude session so every completed OpenCode turn owns an immutable Claude continuation boundary, while a user-aborted turn may continue from the interrupted CLI session itself. Undo resumes a surviving earlier completed turn without retaining the reverted messages in Claude's history. Resumed executions send only the newest ordered user content because Claude owns the durable conversation history. Historical requests without an exact resume boundary remain rejected rather than silently losing assistant or tool history. First prompts and structured-output retries retain fresh-execution behavior, and Claude-owned same-turn tool activity never triggers another OpenCode provider turn.
 
 The one synthetic exception is a workflow completion. A run the model started itself reports back as an all-synthetic message carrying the workflow plugin's run marker, and refusing it would leave the model unable to read its own result, so a marked completion may resume an otherwise exact boundary. The marker is a designation rather than proof — any client that can prompt the session can already drive it — so every other boundary condition still has to hold, and an unmarked all-synthetic message is still refused. When the boundary is not exact, that turn fails visibly with the same boundary error as any other historical request rather than silently losing history.
 
@@ -287,19 +291,20 @@ The workflow plugin does not:
 - Late output is ignored after cancellation or settlement.
 - Workflow cancellation uses ordinary session cancellation behavior.
 - Cancellation produces a normal interrupted or terminal assistant turn.
-- An interrupted turn does not persist a completed resume boundary, so its Claude session ID is never reused by a later prompt.
-- A session whose newest assistant turn was interrupted therefore has no exact boundary left, and its next prompt fails with the boundary error rather than starting a fresh conversation that would silently lose the history Claude owns. Cancelling a question is cancelling a turn and ends the same way.
+- Streamed assistant parts retain the Claude session ID, so a later prompt can fork-resume an immediately preceding user-aborted turn just as Claude CLI resumes after an interactive interruption. Other failed turns remain non-resumable.
+- An interruption before Claude reports its session ID has no exact boundary, so the next prompt fails with the boundary error rather than starting a fresh conversation that would silently lose the history Claude owns. Cancelling a question before its completed execution boundary has the same limit.
+- Undo does not resume the interrupted Claude state. It uses OpenCode's ordinary snapshot revert to restore tracked file changes, removes the reverted messages when the replacement prompt is admitted, and forks the surviving earlier completed Claude boundary. Undoing the first turn starts the replacement prompt as a fresh Claude session because no earlier boundary exists.
 - Cancelling releases the turn's facade registrations, so an in-flight facade call is answered with an error and a later call from the dead execution is refused.
 - A question the turn was still waiting on is rejected, so the dock closes instead of outliving the turn that asked.
 
 ## Recovery
 
 - Graceful server shutdown terminates active Claude processes and settles their turns.
-- An incomplete turn remains readable after restart.
+- An incomplete turn remains readable after restart; a user-aborted turn is resumable when its persisted parts contain the Claude session ID.
 - Initial support does not automatically resume execution after a hard crash.
 - Completed turns persist distinct forked Claude session IDs and use `--resume` only at an exact later-user boundary.
 - OpenCode remains authoritative for the persisted transcript.
-- In-flight provider work is not recovered after a crash, and an incomplete turn cannot become a resume boundary.
+- In-flight provider work is not recovered after a crash, and a crash-incomplete turn cannot become a resume boundary.
 
 ## Persistence Compatibility
 
@@ -370,7 +375,8 @@ The workflow plugin does not:
 - A marked workflow completion resumes an otherwise exact Claude boundary; an unmarked all-synthetic message still does not.
 - A later real user prompt forks the matching completed Claude CLI session with only the new ordered text and image content.
 - Undoing a later turn resumes the surviving earlier Claude boundary without the reverted messages.
-- Model switches, interrupted turns, stale metadata, same-turn activity, and structured-output retries do not resume a Claude session.
+- An immediately preceding user-aborted turn resumes when Claude reported a session ID before termination; interruption before that point fails safely, and undo still resumes only a surviving completed boundary.
+- Model switches, non-interruption failures, stale metadata, same-turn activity, and structured-output retries do not resume a Claude session.
 - Structured output follows normal success and failure contracts.
 - Stop terminates execution and settles the turn.
 - Timeout, nonzero exit, malformed output, and missing completion settle safely.
@@ -386,7 +392,7 @@ The workflow plugin does not:
 - Proxying MCP resources or resource templates through the facade.
 - Treating the facade's token as an isolation boundary: a local agent that can run commands can read its own environment, so the token is loopback routing, not a sandbox.
 - Supporting arbitrary external runtimes through a public plugin API.
-- Recovering or resuming an incomplete Claude turn, including a question a restart interrupted: pending questions stay process-local, exactly as they are for OpenCode's own models.
+- Recovering or resuming a crash-incomplete Claude turn, including a question a restart interrupted: pending questions stay process-local, exactly as they are for OpenCode's own models.
 - Recovering in-flight execution after a hard crash.
 - Implementing v2 execution or presentation.
 - Tracking or displaying Claude CLI token usage, context occupancy, or cost.

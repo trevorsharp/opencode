@@ -212,6 +212,7 @@ function command(turn: Turn): ChildProcess.Command {
     "--output-format",
     "stream-json",
     "--verbose",
+    "--include-partial-messages",
     ...(files.length ? ["--input-format", "stream-json"] : []),
     ...(turn.resumeSessionID ? ["--resume", turn.resumeSessionID, "--fork-session"] : []),
     "--dangerously-skip-permissions",
@@ -233,6 +234,7 @@ function command(turn: Turn): ChildProcess.Command {
     env: {
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
       CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1",
+      CLAUDE_CODE_THRIFTY_SONIC: "0",
       ...(turn.facade ? { [turn.facade.env]: turn.facade.token } : {}),
     },
     stdin: Stream.make(
@@ -263,6 +265,18 @@ function translate(turn: Omit<Turn, "prompt">): Translator {
   let result: Record<string, any> | undefined
   let sessionID: string | undefined
   let blocks = 0
+  let streamMessageID: string | undefined
+  const streamBlocks = new Map<
+    string,
+    { id: string; messageID: string; type: "text" | "thinking"; open: boolean; completed: boolean }
+  >()
+
+  const metadata = (value: Record<string, any> = {}) => ({
+    [ClaudeCLI.EXECUTION]: {
+      ...value,
+      ...(sessionID ? { claudeSessionID: sessionID } : {}),
+    },
+  })
 
   const toolInput = (input: unknown): Record<string, any> => {
     if (!isRecord(input)) return { value: input }
@@ -275,21 +289,96 @@ function translate(turn: Omit<Turn, "prompt">): Translator {
       name: name.toLowerCase(),
       input: toolInput(input),
       providerExecuted: true,
-      providerMetadata: { [ClaudeCLI.EXECUTION]: { tool: name, input } },
+      providerMetadata: metadata({ tool: name, input }),
     })
+
+  const closeStreamBlocks = (messageID: string, index?: number) => {
+    const events: LLMEvent[] = []
+    for (const [key, block] of streamBlocks) {
+      if (block.messageID !== messageID || !block.open) continue
+      if (index !== undefined && key !== `${messageID}:${index}`) continue
+      block.open = false
+      events.push(block.type === "text" ? LLMEvent.textEnd({ id: block.id }) : LLMEvent.reasoningEnd({ id: block.id }))
+    }
+    return events
+  }
+
+  const stream = (event: Record<string, any>) => {
+    const value = event.event
+    if (!isRecord(value)) return []
+    if (value.type === "message_start") {
+      if (!isRecord(value.message) || typeof value.message.id !== "string") return []
+      const events = streamMessageID ? closeStreamBlocks(streamMessageID) : []
+      streamMessageID = value.message.id
+      return events
+    }
+    if (!streamMessageID) return []
+    if (value.type === "message_stop") {
+      const events = closeStreamBlocks(streamMessageID)
+      streamMessageID = undefined
+      return events
+    }
+    if (typeof value.index !== "number") return []
+    const key = `${streamMessageID}:${value.index}`
+    if (value.type === "content_block_stop") return closeStreamBlocks(streamMessageID, value.index)
+    if (value.type === "content_block_start" && isRecord(value.content_block)) {
+      const type = value.content_block.type
+      if (type !== "text" && type !== "thinking") return []
+      const block = { id: key, messageID: streamMessageID, type, open: true, completed: false }
+      streamBlocks.set(key, block)
+      const text = type === "text" ? value.content_block.text : value.content_block.thinking
+      return [
+        type === "text"
+          ? LLMEvent.textStart({ id: block.id, providerMetadata: metadata() })
+          : LLMEvent.reasoningStart({ id: block.id, providerMetadata: metadata() }),
+        ...(typeof text !== "string" || !text
+          ? []
+          : [
+              type === "text"
+                ? LLMEvent.textDelta({ id: block.id, text })
+                : LLMEvent.reasoningDelta({ id: block.id, text }),
+            ]),
+      ]
+    }
+    if (value.type !== "content_block_delta" || !isRecord(value.delta)) return []
+    const block = streamBlocks.get(key)
+    if (!block?.open) return []
+    if (block.type === "text" && value.delta.type === "text_delta" && typeof value.delta.text === "string") {
+      return value.delta.text ? [LLMEvent.textDelta({ id: block.id, text: value.delta.text })] : []
+    }
+    if (
+      block.type === "thinking" &&
+      value.delta.type === "thinking_delta" &&
+      typeof value.delta.thinking === "string"
+    ) {
+      return value.delta.thinking ? [LLMEvent.reasoningDelta({ id: block.id, text: value.delta.thinking })] : []
+    }
+    return []
+  }
 
   const assistant = (message: Record<string, any>) => {
     const events: LLMEvent[] = []
     for (const block of message.content as any[]) {
+      const streamed = Array.from(streamBlocks.values()).find(
+        (candidate) =>
+          candidate.messageID === message.id && candidate.type === block?.type && candidate.completed === false,
+      )
+      if (streamed) streamed.completed = true
       const id = `${typeof message.id === "string" ? message.id : "message"}:${blocks++}`
       if (block?.type === "text" && typeof block.text === "string" && block.text) {
-        events.push(LLMEvent.textStart({ id }), LLMEvent.textDelta({ id, text: block.text }), LLMEvent.textEnd({ id }))
+        if (streamed) continue
+        events.push(
+          LLMEvent.textStart({ id, providerMetadata: metadata() }),
+          LLMEvent.textDelta({ id, text: block.text }),
+          LLMEvent.textEnd({ id }),
+        )
         continue
       }
       // Thinking blocks usually carry only a signature, with no readable text.
       if (block?.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim()) {
+        if (streamed) continue
         events.push(
-          LLMEvent.reasoningStart({ id }),
+          LLMEvent.reasoningStart({ id, providerMetadata: metadata() }),
           LLMEvent.reasoningDelta({ id, text: block.thinking }),
           LLMEvent.reasoningEnd({ id }),
         )
@@ -313,7 +402,7 @@ function translate(turn: Omit<Turn, "prompt">): Translator {
             // Claude already has the result and continues its own loop, so the
             // turn must not schedule another provider round for this call.
             providerExecuted: true,
-            providerMetadata: { [ClaudeCLI.EXECUTION]: { tool: block.name } },
+            providerMetadata: metadata({ tool: block.name }),
           }),
         )
         continue
@@ -373,7 +462,7 @@ function translate(turn: Omit<Turn, "prompt">): Translator {
         // result and the turn must not continue on its account. The runtime still
         // runs the todo tool, which is the only way the session list changes.
         providerExecuted: true,
-        providerMetadata: { [ClaudeCLI.EXECUTION]: { dispatch: true } },
+        providerMetadata: metadata({ dispatch: true }),
       }),
     ]
   }
@@ -436,14 +525,17 @@ function translate(turn: Omit<Turn, "prompt">): Translator {
       if (result) return []
       const event = parse(line)
       if (event?.type === "result") {
+        const events = streamMessageID ? closeStreamBlocks(streamMessageID) : []
+        streamMessageID = undefined
         result = event
         if (!sessionID && typeof event.session_id === "string") sessionID = event.session_id
-        return []
+        return events
       }
       if (event?.type === "system" && event.subtype === "init" && typeof event.session_id === "string") {
         sessionID = event.session_id
         return []
       }
+      if (event?.type === "stream_event") return stream(event)
       if (!isRecord(event?.message) || !Array.isArray(event.message.content)) return []
       if (event.type === "assistant") return assistant(event.message)
       if (event.type === "user") return user(event)
