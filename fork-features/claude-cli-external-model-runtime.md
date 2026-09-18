@@ -97,14 +97,14 @@ The runtime also preserves these restrictions:
 - Strict MCP configuration naming exactly one server: OpenCode's own tool facade.
 - Chrome integration disabled.
 - No Claude subagent-launching tool.
-- Bundled Claude skills, auto memory, and the `thrifty_sonic` experiment disabled through the child process environment; user and project skills remain available.
+- Bundled Claude skills and auto memory disabled through the child process environment; user and project skills remain available.
 - Claude session persistence enabled so later OpenCode prompts can resume an exact completed turn.
 - Workflow-provided system instructions appended to the Claude prompt.
 - Optional JSON schema supplied for structured-output requests.
 - Image turns use one newline-terminated `stream-json` user message on stdin; text-only turns retain plain-text stdin.
 - Partial message output enabled so text and readable thinking reach OpenCode as Claude produces them.
 
-No additional environment restrictions, permission disclosures, or security policy are required beyond preserving this behavior. The runtime sets `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, and `CLAUDE_CODE_THRIFTY_SONIC=0` directly, so this policy does not depend on any user's Claude settings file.
+No additional environment restrictions, permission disclosures, or security policy are required beyond preserving this behavior. The runtime sets `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1` and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` directly, so this policy does not depend on any user's Claude settings file.
 
 A turn that produces no output for five minutes is treated as stuck: the runtime terminates the process group and settles the turn as failed. Installations can widen or narrow that window with `provider["claude-cli"].options.chunkTimeout`, the same option other providers use for silent streams. A facade call cannot trip that window: the watchdog measures output OpenCode is waiting for, and while OpenCode is running a tool for Claude it is not waiting for any.
 

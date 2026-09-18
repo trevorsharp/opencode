@@ -234,7 +234,6 @@ function command(turn: Turn): ChildProcess.Command {
     env: {
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
       CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1",
-      CLAUDE_CODE_THRIFTY_SONIC: "0",
       ...(turn.facade ? { [turn.facade.env]: turn.facade.token } : {}),
     },
     stdin: Stream.make(
