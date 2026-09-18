@@ -209,6 +209,19 @@ Mounting desktop and mobile sidebars simultaneously performs duplicate work and 
 - Mobile and desktop navigation retain equivalent behavior.
 - Sidebar state remains coherent across breakpoint changes.
 
+## Titlebar Action Ownership
+
+### Problem
+
+Router transitions can keep the previous and destination project pages mounted concurrently while destination state hydrates. If both pages append actions into the same titlebar portal target, duplicate controls can remain visible until a page refresh.
+
+### Expected Behavior
+
+- Only the newest portal owner in the titlebar action slot is visible.
+- Abandoning a transition reveals the previous route's actions again.
+- Project and session switches cannot leave duplicate titlebar controls visible.
+- Legacy and newer titlebar layouts share the same ownership behavior.
+
 ## Validation Strategy
 
 Each fix should have a focused regression scenario demonstrating:
